@@ -772,14 +772,12 @@ export const STORY_GRAPH: StoryGraph = {
     options: [
       opt('A fight breaks out', 5, '#7f1d1d'),
       opt('You try to recruit them', 3, '#1d4ed8'),
-      opt('You attempt a peaceful trade', 2, '#0d9488'),
       opt('You avoid them entirely', 3, '#374151'),
     ],
     next: (state, label) => {
       const routes: Record<string, string> = {
         'A fight breaks out': 'pirateFightTactic',
         'You try to recruit them': 'meetPiratesRecruitAttempt',
-        'You attempt a peaceful trade': 'meetPiratesTradeOutcome',
         'You avoid them entirely': 'meetPiratesAvoid',
       }
       return routes[label] ?? hubIdFor(state)
@@ -805,19 +803,6 @@ export const STORY_GRAPH: StoryGraph = {
       opt('They refuse and attack!', 3, '#7f1d1d'),
     ],
     next: (state, label) => (label === 'They refuse and attack!' ? 'pirateFightTactic' : hubIdFor(state)),
-  },
-
-  meetPiratesTradeOutcome: {
-    type: 'wheel',
-    id: 'meetPiratesTradeOutcome',
-    question: 'How does the trade go?',
-    icon: '⚖️',
-    options: [
-      opt('A fair trade — you both profit', 5, '#0d9488'),
-      opt('They swindle you', 3, '#b45309'),
-      opt('It turns into a fight!', 2, '#7f1d1d'),
-    ],
-    next: (state, label) => (label === 'It turns into a fight!' ? 'pirateFightTactic' : hubIdFor(state)),
   },
 
   meetPiratesAvoid: {
