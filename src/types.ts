@@ -117,6 +117,10 @@ export type EventLogEntry = { question: string; answer: string }
 export type CharacterState = {
   affiliation?: Affiliation
   race?: string
+  /** For a Hybrid character: the two underlying races whose stat mods both apply. Absent for
+   * a single-race character (whose mods come from looking up `race` directly). */
+  raceComponents?: [string, string]
+  pendingHybridRace1?: string
   stats: Stats
   haki: HakiState
   fightingStyle?: string
@@ -148,6 +152,9 @@ export type CharacterState = {
   pendingGrowthPicked: string[]
   /** Node id to return to once a shared post-fight sequence (rank check / growth check) finishes. */
   pendingReturnNode?: string
+  /** The triggering hub option's own wheel weight, for non-combat growth checks — lower means
+   * the experience was rarer, which should raise its odds of teaching you something. */
+  pendingEventRarityWeight?: number
   /** How many times the "What's next?" hub wheel has been spun — gates and grows the odds
    * of the Immortalize option appearing on that wheel. */
   hubSpinCount: number

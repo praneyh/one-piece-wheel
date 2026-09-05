@@ -10,8 +10,10 @@ import {
   type Affiliation,
   type CharacterState,
   type HakiLevel,
+  type HakiState,
   type HakiType,
   type StatKey,
+  type Stats,
   type WheelOption,
 } from '../types'
 
@@ -42,7 +44,7 @@ export const RACES: RaceDef[] = [
   { label: 'Skypiean', weight: 5, color: '#64748b', mods: { speed: 1 }, blurb: 'Light-boned sky dwellers, built for the wind. (+1 Speed tier)' },
   { label: 'Giant', weight: 4, color: '#ea580c', mods: { power: 3, durability: 3, speed: -2 }, blurb: 'Towering size trades speed for raw power. (+3 Power tiers, +3 Durability tiers, -2 Speed tiers)' },
   { label: 'Cyborg', weight: 4, color: '#475569', mods: { durability: 3, power: 1 }, blurb: 'Reinforced frame, harder to put down. (+3 Durability tiers, +1 Power tier)' },
-  { label: 'Hybrid', weight: 4, color: '#16a34a', mods: { power: 1, speed: 1 }, blurb: 'The best of two worlds. (+1 Power tier, +1 Speed tier)' },
+  { label: 'Hybrid', weight: 4, color: '#16a34a', mods: {}, blurb: 'The best of two worlds — spin twice more to find out which two.' },
   { label: 'Seraphim', weight: 3, color: '#8b5cf6', mods: { power: 3, durability: 2, speed: 2 }, blurb: 'Lunarian-blooded bioweapon output. (+3 Power tiers, +2 Durability tiers, +2 Speed tiers)' },
   { label: 'Tontatta', weight: 3, color: '#14b8a6', mods: { speed: 3, power: -2 }, blurb: 'Tiny and nimble, hits far above their size. (+3 Speed tiers, -2 Power tiers)' },
   { label: 'Long-Arm', weight: 3, color: '#f97316', mods: { power: 2, speed: -1 }, blurb: 'Reach for days. (+2 Power tiers, -1 Speed tier)' },
@@ -68,11 +70,39 @@ export const GROWTH_COUNT_OPTIONS: WheelOption[] = [
   opt('6', 1, '#7f1d1d'),
 ]
 
-/** Applies a race's tier shift to a freshly-rolled base stat tier. */
-export function applyRaceModToTier(state: CharacterState, key: StatKey, baseLabel: string): string {
-  const raceDef = RACES.find((r) => r.label === state.race)
-  const mod = raceDef?.mods[key] ?? 0
-  return bumpStatTier(key, baseLabel, mod)
+/** A race's net tier shift for one stat. A Hybrid character stacks the mods from both of
+ * their component races instead of looking up a single race. */
+function raceModFor(state: CharacterState, key: StatKey): number {
+  const raceLabels = state.raceComponents ?? (state.race ? [state.race] : [])
+  return raceLabels.reduce((sum, label) => {
+    const raceDef = RACES.find((r) => r.label === label)
+    return sum + (raceDef?.mods[key] ?? 0)
+  }, 0)
+}
+
+/**
+ * The starting-stat wheel for `key`, with every wedge's label already shifted by the
+ * player's race mod — so the wheel can only ever land on the true final tier, and a positive
+ * race bonus is a guaranteed floor rather than something the roll could still land under (the
+ * old approach rolled on the unshifted wheel and applied the mod afterward, which meant the
+ * on-screen result during the spin never matched what the race bonus should guarantee).
+ * Wedges that shift onto the same resulting tier (clamped at either end of the ladder) merge
+ * their weights rather than showing as duplicate slices.
+ */
+export function raceAdjustedStatTierOptions(state: CharacterState, key: StatKey): WheelOption[] {
+  const mod = raceModFor(state, key)
+  if (mod === 0) return STAT_TIER_OPTIONS[key]
+  const merged = new Map<string, WheelOption>()
+  for (const wedge of STAT_TIER_OPTIONS[key]) {
+    const shiftedLabel = bumpStatTier(key, wedge.label, mod)
+    const existing = merged.get(shiftedLabel)
+    if (existing) {
+      merged.set(shiftedLabel, { ...existing, weight: existing.weight + wedge.weight })
+    } else {
+      merged.set(shiftedLabel, { ...wedge, label: shiftedLabel })
+    }
+  }
+  return [...merged.values()]
 }
 
 // ---------------------------------------------------------------------------
@@ -100,10 +130,163 @@ export const STAT_TIER_OPTIONS: Record<StatKey, WheelOption[]> = {
   endurance: ENDURANCE_TIER_OPTIONS,
 }
 
-/** Sum of each stat's tier index — a rough aggregate combat score. */
-export function playerPowerScore(state: CharacterState): number {
-  const keys: StatKey[] = ['power', 'speed', 'durability', 'endurance']
-  return keys.reduce((sum, k) => sum + statTierIndex(k, state.stats[k]), 0)
+/**
+ * A single 1-100 "how strong is this character overall" number, built from every axis of
+ * progression: the four core stats (45%), Haki (25%), fighting-style mastery (15%), and — if
+ * they have one — Devil Fruit mastery (15%). Each axis is normalized to 0-1 by its own tier
+ * ladder position before weighting, so a maxed-out character on every axis scores ~100 and a
+ * fresh baseline character scores near 1. This is the number fight/growth/survival odds compare
+ * against each opponent's own 1-100 power rating.
+ */
+/** A full stat sheet on the same scale the player builds — this is what both the player's own
+ * overall strength and every NPC's overall strength are computed from, so the two sides of any
+ * fight are always measured the same way. */
+export type StrengthProfile = {
+  stats: Stats
+  haki: HakiState
+  fightingMastery: string
+  /** Omit (or leave undefined) for a character with no Devil Fruit. */
+  devilFruitMastery?: string
+}
+
+/**
+ * The shared 1-100 "how strong is this character overall" formula: the four core stats
+ * (45%), Haki (25%), fighting-style mastery (15%), and Devil Fruit mastery if applicable (15%).
+ * Each axis is normalized to 0-1 by its own tier-ladder position before weighting, so a
+ * character maxed out on every axis scores ~100 and a fresh baseline character scores near 1.
+ */
+export function overallStrengthFromProfile(profile: StrengthProfile): number {
+  const statKeys: StatKey[] = ['power', 'speed', 'durability', 'endurance']
+  const statScore =
+    statKeys.reduce((sum, k) => sum + statTierIndex(k, profile.stats[k]) / (STAT_TIER_LADDERS[k].length - 1), 0) /
+    statKeys.length
+
+  const hakiOrder: HakiLevel[] = ['None', 'Basic', 'Advanced']
+  const hakiScore =
+    HAKI_TYPES.reduce((sum, t) => sum + hakiOrder.indexOf(profile.haki[t]), 0) / (HAKI_TYPES.length * 2)
+
+  const masteryIdx = Math.max(0, MASTERY_LEVEL_ORDER.indexOf(profile.fightingMastery))
+  const masteryScore = masteryIdx / (MASTERY_LEVEL_ORDER.length - 1)
+
+  const dfScore = profile.devilFruitMastery
+    ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.devilFruitMastery)) /
+      (DEVIL_FRUIT_MASTERY_LEVELS.length - 1)
+    : 0
+
+  const combined = statScore * 0.45 + hakiScore * 0.25 + masteryScore * 0.15 + dfScore * 0.15
+  return Math.max(1, Math.min(100, Math.round(combined * 100)))
+}
+
+/** Builds the player's own StrengthProfile from their current run and scores it. */
+export function playerOverallStrength(state: CharacterState): number {
+  return overallStrengthFromProfile({
+    stats: state.stats,
+    haki: state.haki,
+    fightingMastery: state.fightingMastery ?? MASTERY_LEVEL_ORDER[0],
+    devilFruitMastery: state.devilFruit ? (state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0]) : undefined,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Combat edge — the actual fight/growth/survival math below is driven by this, not by the
+// blended 1-100 overall-strength score above.
+//
+// Averaging four stats into one number (as overallStrengthFromProfile does) hides exactly the
+// kind of mismatch that should decide a fight: a character with, say, Universal Level
+// durability is untouchable by a foe who can at best output Town Level force, no matter how
+// that foe's OTHER stats average out. So combat odds instead compare offense against defense
+// tier-for-tier (my power vs their durability, and vice versa) and treat a several-tier gap as
+// what it is in this setting — usually decisive — rather than one moderate blend.
+// ---------------------------------------------------------------------------
+
+type CombatProfile = {
+  power: number
+  speed: number
+  durability: number
+  endurance: number
+  hakiSum: number
+  masteryIdx: number
+  dfMasteryIdx: number
+}
+
+const FALLBACK_COMBAT_PROFILE: CombatProfile = {
+  power: 3,
+  speed: 3,
+  durability: 3,
+  endurance: 3,
+  hakiSum: 0,
+  masteryIdx: 2,
+  dfMasteryIdx: 0,
+}
+
+function combatProfileFrom(profile: StrengthProfile): CombatProfile {
+  const hakiOrder: HakiLevel[] = ['None', 'Basic', 'Advanced']
+  return {
+    power: statTierIndex('power', profile.stats.power),
+    speed: statTierIndex('speed', profile.stats.speed),
+    durability: statTierIndex('durability', profile.stats.durability),
+    endurance: statTierIndex('endurance', profile.stats.endurance),
+    hakiSum: HAKI_TYPES.reduce((sum, t) => sum + hakiOrder.indexOf(profile.haki[t]), 0),
+    masteryIdx: Math.max(0, MASTERY_LEVEL_ORDER.indexOf(profile.fightingMastery)),
+    dfMasteryIdx: profile.devilFruitMastery
+      ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.devilFruitMastery))
+      : 0,
+  }
+}
+
+function playerCombatProfile(state: CharacterState): CombatProfile {
+  return combatProfileFrom({
+    stats: state.stats,
+    haki: state.haki,
+    fightingMastery: state.fightingMastery ?? MASTERY_LEVEL_ORDER[0],
+    devilFruitMastery: state.devilFruit ? (state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0]) : undefined,
+  })
+}
+
+function npcCombatProfile(name: string): CombatProfile {
+  const npc = ALL_NPCS.find((n) => n.name === name)
+  return npc ? combatProfileFrom(npc.profile) : FALLBACK_COMBAT_PROFILE
+}
+
+/** How many edge-points constitute a "decisive" advantage in the win/lose logistic curve —
+ * smaller means steeper, i.e. a smaller gap already produces lopsided odds. */
+const FIGHT_EDGE_SCALE = 8
+
+const EDGE_SPEED_WEIGHT = 0.5
+const EDGE_ENDURANCE_WEIGHT = 0.3
+
+/**
+ * A signed "how lopsided is this matchup" score: positive favors the player, negative favors
+ * the opponent. Built from raw tier-index gaps (not normalized 0-1), so a genuinely huge gap on
+ * any one axis — especially the offense-vs-defense exchange — dominates the result the way it
+ * would in the actual story, instead of being diluted by averaging in less-relevant stats.
+ */
+export function combatEdge(state: CharacterState, opponentName: string): number {
+  const me = playerCombatProfile(state)
+  const opp = npcCombatProfile(opponentName)
+
+  // Can I hurt them? (my power vs their durability) minus can they hurt me? (their power vs
+  // my durability) — this is what actually determines who's in danger in a fight, not a
+  // power-vs-power or durability-vs-durability comparison in isolation.
+  const myOffense = me.power - opp.durability
+  const theirOffense = opp.power - me.durability
+  const physicalEdge = myOffense - theirOffense
+
+  const speedEdge = (me.speed - opp.speed) * EDGE_SPEED_WEIGHT
+  const enduranceEdge = (me.endurance - opp.endurance) * EDGE_ENDURANCE_WEIGHT
+  const hakiEdge = me.hakiSum - opp.hakiSum
+  const masteryEdge = me.masteryIdx - opp.masteryIdx
+  const dfEdge = me.dfMasteryIdx - opp.dfMasteryIdx
+
+  return physicalEdge + speedEdge + enduranceEdge + hakiEdge + masteryEdge + dfEdge
+}
+
+/** Maps a signed edge score to a 1-99 weight via a logistic curve — steep enough that a
+ * genuinely decisive edge (the kind a several-tier stat gap produces) lands in the 90s+,
+ * while a near-even matchup stays close to 50/50. */
+function logisticWeight(edge: number, scale: number): number {
+  const probability = 100 / (1 + Math.pow(10, -edge / scale))
+  return Math.round(Math.max(1, Math.min(99, probability)))
 }
 
 const STAT_TIER_COLOR_PALETTES: Record<StatKey, string[]> = {
@@ -168,20 +351,24 @@ export function growableCount(state: CharacterState): number {
   return statCount + hakiCount + masteryCount + dfMasteryCount
 }
 
-/** Weighted Yes/No odds for post-fight growth, favoring wins against relatively stronger foes. */
+/** Weighted Yes/No odds for post-fight growth: the harder the fight relative to your own
+ * overall strength, the more likely it is to have pushed you to grow. An easy stomp barely
+ * teaches you anything; a fight against someone far stronger than you is where growth happens. */
 export function growthOdds(state: CharacterState, opponentName: string): WheelOption[] {
-  const playerTier = tierIndex(state)
-  const opponentTier = npcStrength(opponentName)
-  const diff = opponentTier - playerTier
-  const yesWeight = Math.min(9, Math.max(1, Math.round(4 + diff * 1.2)))
-  const noWeight = 10 - yesWeight
+  const difficulty = -combatEdge(state, opponentName) // positive = the fight was hard for me
+  const yesWeight = Math.min(95, Math.max(2, Math.round(35 + difficulty * 1.5)))
+  const noWeight = 100 - yesWeight
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#dc2626')]
 }
 
-/** Flat, opponent-agnostic growth odds for non-combat moments (a lucky find, a spreading
- * reputation) that can still teach you something, just without a foe to measure against. */
-export function growthOddsGeneric(): WheelOption[] {
-  return [opt('Yes', 5, '#16a34a'), opt('No', 5, '#dc2626')]
+/** Opponent-agnostic growth odds for non-combat moments (a lucky find, a spreading
+ * reputation) — scaled by how rare the triggering event was. `rarityWeight` is that event's
+ * own weight on the hub wheel it came from: a smaller weight (rarer to land on) means a bigger
+ * payoff when it does happen, since rare experiences should feel more rewarding than routine ones. */
+export function growthOddsGeneric(rarityWeight = 5): WheelOption[] {
+  const yesWeight = Math.min(90, Math.max(15, Math.round(85 - rarityWeight * 8)))
+  const noWeight = 100 - yesWeight
+  return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#dc2626')]
 }
 
 // ---------------------------------------------------------------------------
@@ -202,11 +389,9 @@ export function immortalizeOption(hubSpinCount: number): WheelOption | null {
 
 /** Weighted Yes/No odds for a post-fight rank/bounty bump, favoring wins against relatively stronger foes. */
 export function rankIncreaseOdds(state: CharacterState, opponentName: string): WheelOption[] {
-  const playerTier = tierIndex(state)
-  const opponentTier = npcStrength(opponentName)
-  const diff = opponentTier - playerTier
-  const yesWeight = Math.min(9, Math.max(1, Math.round(3 + diff * 1.5)))
-  const noWeight = 10 - yesWeight
+  const difficulty = -combatEdge(state, opponentName) // positive = the fight was hard for me
+  const yesWeight = Math.min(95, Math.max(2, Math.round(25 + difficulty * 1.75)))
+  const noWeight = 100 - yesWeight
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#374151')]
 }
 
@@ -486,6 +671,24 @@ export function tierIndex(state: CharacterState): number {
   return Math.round(frac * 7)
 }
 
+/**
+ * How much weight the "Get a new bounty"/"Get promoted" hub option should carry, given how the
+ * player's raw stat-based overall strength compares to where they currently sit on the rank
+ * ladder. Mapping playerOverallStrength (1-100) onto the same ladder gives an "expected" rank
+ * position; being well ahead of that (stats far outpacing your current rank) makes the
+ * promotion option common, while being well behind it (an over-ranked, under-powered character)
+ * makes it rare — reflecting that the wheel is what's actually deciding whether the world
+ * notices you're overdue, not the other way around.
+ */
+export function rankPressureWeight(state: CharacterState, baseWeight: number): number {
+  const ladder = rankLadderFor(state)
+  const maxIdx = Math.max(1, ladder.length - 1)
+  const expectedIdx = Math.round((playerOverallStrength(state) / 100) * maxIdx)
+  const actualIdx = ladder.indexOf(state.rank)
+  const gap = expectedIdx - (actualIdx === -1 ? 0 : actualIdx)
+  return Math.max(1, Math.min(15, Math.round(baseWeight + gap * 1.2)))
+}
+
 /** Road Poneglyphs are famously scarce — searching a location rarely turns one up, though a
  * higher-tier explorer with better resources fares a little better. */
 export function poneglyphFindOdds(state: CharacterState): WheelOption[] {
@@ -501,79 +704,487 @@ export function poneglyphFindOdds(state: CharacterState): WheelOption[] {
 
 export type NpcDef = {
   name: string
+  /** 0-7 narrative encounter band, used only to gate which opponents show up at a given
+   * rank/bounty — separate from the StrengthProfile, which drives the actual fight math. */
   minTier: number
+  /** A full stat sheet on the same scale the player has, scored via the same
+   * overallStrengthFromProfile() formula — see `profile()` below for the compact builder. */
+  profile: StrengthProfile
   weight: number
   color: string
   /** 0 = wouldn't kill you, 3 = will end your story without hesitation. */
   lethality: number
 }
 
+/**
+ * Compact builder for an NPC's StrengthProfile: tier *indices* into the same ladders the
+ * player's stats are drawn from (0 = the ladder's lowest rung), rather than spelling out each
+ * label. Keeps ~55 hand-assessed canon power levels readable side by side.
+ *   p/s/d/e         — Power / Speed / Durability / Endurance tier index
+ *   haki            — any of Armament / Observation / Conqueror's the character has (default None)
+ *   masteryIdx      — index into Novice..Grandmaster
+ *   dfMasteryIdx    — index into Untrained..Awakened; omit entirely if no Devil Fruit
+ */
+// No character seen, said, or reasonably inferred from the manga/anime has ever displayed
+// power, speed, or endurance beyond these ceilings — the top rungs of each ladder (Moon Level
+// and up for power/durability, FTL and Infinite Speed, Absolute endurance) are left reachable
+// only by the player's own stat rolls, which can exceed anything canon has shown.
+const NPC_POWER_DURABILITY_MAX_IDX = POWER_TIERS.length - 1 - 4
+const NPC_SPEED_MAX_IDX = SPEED_TIERS.length - 1 - 2
+const NPC_ENDURANCE_MAX_IDX = ENDURANCE_TIERS.length - 1 - 1
+
+function profile(
+  p: number,
+  s: number,
+  d: number,
+  e: number,
+  haki: Partial<HakiState>,
+  masteryIdx: number,
+  dfMasteryIdx?: number,
+): StrengthProfile {
+  const clampIdx = (i: number, max: number) => Math.max(0, Math.min(max, i))
+  return {
+    stats: {
+      power: POWER_TIERS[clampIdx(p, NPC_POWER_DURABILITY_MAX_IDX)],
+      speed: SPEED_TIERS[clampIdx(s, NPC_SPEED_MAX_IDX)],
+      durability: DURABILITY_TIERS[clampIdx(d, NPC_POWER_DURABILITY_MAX_IDX)],
+      endurance: ENDURANCE_TIERS[clampIdx(e, NPC_ENDURANCE_MAX_IDX)],
+    },
+    haki: {
+      Armament: haki.Armament ?? 'None',
+      Observation: haki.Observation ?? 'None',
+      "Conqueror's": haki["Conqueror's"] ?? 'None',
+    },
+    fightingMastery: MASTERY_LEVEL_ORDER[clampIdx(masteryIdx, MASTERY_LEVEL_ORDER.length - 1)],
+    devilFruitMastery:
+      dfMasteryIdx !== undefined
+        ? DEVIL_FRUIT_MASTERY_LEVELS[clampIdx(dfMasteryIdx, DEVIL_FRUIT_MASTERY_LEVELS.length - 1)]
+        : undefined,
+  }
+}
+
 export const MARINE_STRONG_ROSTER: NpcDef[] = [
-  { name: 'Coby', minTier: 0, weight: 4, color: '#f9a8d4', lethality: 0 },
-  { name: 'Helmeppo', minTier: 0, weight: 3, color: '#fca5a5', lethality: 0 },
-  { name: 'Fullbody', minTier: 0, weight: 3, color: '#93c5fd', lethality: 0 },
-  { name: 'Smoker', minTier: 1, weight: 4, color: '#94a3b8', lethality: 1 },
-  { name: 'Tashigi', minTier: 1, weight: 3, color: '#38bdf8', lethality: 0 },
-  { name: 'Hina', minTier: 2, weight: 3, color: '#f472b6', lethality: 0 },
-  { name: 'X-Drake', minTier: 2, weight: 2, color: '#4d7c0f', lethality: 1 },
-  { name: 'Momonga', minTier: 2, weight: 2, color: '#a3a3a3', lethality: 1 },
-  { name: 'Vergo', minTier: 3, weight: 2, color: '#1f2937', lethality: 2 },
-  { name: 'T-Bone', minTier: 3, weight: 2, color: '#7c2d12', lethality: 1 },
+  // Post-timeskip/Wano Coby trained under Garp, made Rear Admiral track, and — notably —
+  // awakened Conqueror's Haki (one of only a handful of named characters confirmed to have it).
+  {
+    name: 'Coby',
+    minTier: 2,
+    profile: profile(2, 2, 2, 3, { Observation: 'Basic', "Conqueror's": 'Basic' }, 2),
+    weight: 4,
+    color: '#f9a8d4',
+    lethality: 0,
+  },
+  { name: 'Helmeppo', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#fca5a5', lethality: 0 },
+  { name: 'Fullbody', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#93c5fd', lethality: 0 },
+  {
+    name: 'Smoker',
+    minTier: 1,
+    profile: profile(3, 4, 3, 5, { Armament: 'Basic', Observation: 'Basic' }, 3, 4),
+    weight: 4,
+    color: '#94a3b8',
+    lethality: 1,
+  },
+  { name: 'Tashigi', minTier: 1, profile: profile(1, 2, 1, 2, {}, 2), weight: 3, color: '#38bdf8', lethality: 0 },
+  { name: 'Hina', minTier: 2, profile: profile(2, 3, 2, 3, {}, 2, 2), weight: 3, color: '#f472b6', lethality: 0 },
+  {
+    name: 'X-Drake',
+    minTier: 2,
+    profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3, 3),
+    weight: 2,
+    color: '#4d7c0f',
+    lethality: 1,
+  },
+  {
+    name: 'Momonga',
+    minTier: 2,
+    profile: profile(3, 2, 3, 3, { Armament: 'Basic' }, 3),
+    weight: 2,
+    color: '#a3a3a3',
+    lethality: 1,
+  },
+  {
+    name: 'Vergo',
+    minTier: 3,
+    profile: profile(4, 3, 5, 4, { Armament: 'Advanced', Observation: 'Basic' }, 4),
+    weight: 2,
+    color: '#1f2937',
+    lethality: 2,
+  },
+  { name: 'T-Bone', minTier: 3, profile: profile(1, 1, 1, 2, {}, 1), weight: 2, color: '#7c2d12', lethality: 1 },
 ]
 
 export const MARINE_EXTREME_ROSTER: NpcDef[] = [
-  { name: 'Garp', minTier: 3, weight: 4, color: '#78716c', lethality: 0 },
-  { name: 'Sentomaru', minTier: 3, weight: 3, color: '#57534e', lethality: 1 },
-  { name: 'Kuzan', minTier: 4, weight: 3, color: '#2563eb', lethality: 1 },
-  { name: 'Issho', minTier: 4, weight: 3, color: '#a855f7', lethality: 1 },
-  { name: 'Tsuru', minTier: 4, weight: 2, color: '#0ea5e9', lethality: 1 },
-  { name: 'Borsalino', minTier: 5, weight: 2, color: '#facc15', lethality: 2 },
-  { name: 'Sengoku', minTier: 5, weight: 2, color: '#b45309', lethality: 1 },
-  { name: 'Sakazuki', minTier: 6, weight: 2, color: '#991b1b', lethality: 3 },
-  { name: 'Kong', minTier: 7, weight: 1, color: '#3f3f46', lethality: 2 },
+  {
+    name: 'Garp',
+    minTier: 3,
+    profile: profile(9, 6, 9, 7, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
+    weight: 4,
+    color: '#78716c',
+    lethality: 0,
+  },
+  {
+    name: 'Sentomaru',
+    minTier: 3,
+    profile: profile(5, 3, 5, 4, { Armament: 'Basic' }, 3),
+    weight: 3,
+    color: '#57534e',
+    lethality: 1,
+  },
+  {
+    name: 'Kuzan',
+    minTier: 4,
+    profile: profile(8, 7, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 3,
+    color: '#2563eb',
+    lethality: 1,
+  },
+  {
+    name: 'Issho',
+    minTier: 4,
+    profile: profile(8, 6, 8, 7, { Armament: 'Basic', Observation: 'Advanced' }, 5, 5),
+    weight: 3,
+    color: '#a855f7',
+    lethality: 1,
+  },
+  {
+    name: 'Tsuru',
+    minTier: 4,
+    profile: profile(5, 3, 4, 4, { Armament: 'Advanced', Observation: 'Basic' }, 4),
+    weight: 2,
+    color: '#0ea5e9',
+    lethality: 1,
+  },
+  {
+    // Kizaru's own namesake/gimmick is genuinely "attacks travel at the speed of light" — the
+    // one canon character who fits the very top rung left open for NPCs.
+    name: 'Borsalino',
+    minTier: 5,
+    profile: profile(8, 10, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 2,
+    color: '#facc15',
+    lethality: 2,
+  },
+  {
+    name: 'Sengoku',
+    minTier: 5,
+    profile: profile(8, 5, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 4),
+    weight: 2,
+    color: '#b45309',
+    lethality: 1,
+  },
+  {
+    // Akainu sits at the very ceiling of what's canonically shown — alongside Kaido, Big Mom,
+    // Blackbeard, and Shanks — as the single most feared/destructive individual combatants.
+    name: 'Sakazuki',
+    minTier: 6,
+    profile: profile(9, 8, 9, 8, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 2,
+    color: '#991b1b',
+    lethality: 3,
+  },
+  {
+    name: 'Kong',
+    minTier: 7,
+    profile: profile(7, 6, 8, 7, { Armament: 'Advanced', Observation: 'Basic' }, 5),
+    weight: 1,
+    color: '#3f3f46',
+    lethality: 2,
+  },
 ]
 
 export const PIRATE_ROSTER: NpcDef[] = [
-  { name: "Alvida's Gang", minTier: 0, weight: 4, color: '#7f1d1d', lethality: 1 },
-  { name: "Buggy's Crew", minTier: 0, weight: 4, color: '#dc2626', lethality: 1 },
-  { name: 'A drunken island bandit crew', minTier: 0, weight: 3, color: '#78350f', lethality: 1 },
-  { name: "Bellamy's Crew", minTier: 1, weight: 3, color: '#f97316', lethality: 1 },
-  { name: "Foxy's Crew", minTier: 1, weight: 3, color: '#ea580c', lethality: 0 },
-  { name: "Krieg's Remnants", minTier: 2, weight: 2, color: '#57534e', lethality: 2 },
-  { name: 'A Baroque Works Agent', minTier: 2, weight: 2, color: '#334155', lethality: 2 },
-  { name: "Hawkins' Crew", minTier: 3, weight: 2, color: '#581c87', lethality: 2 },
-  { name: "Capone Bege's Crew", minTier: 3, weight: 2, color: '#1e293b', lethality: 2 },
-  { name: 'Kid & Killer', minTier: 4, weight: 2, color: '#dc2626', lethality: 2 },
-  { name: "Bonney's Crew", minTier: 4, weight: 2, color: '#f472b6', lethality: 1 },
-  { name: "Blackbeard's Crew", minTier: 5, weight: 2, color: '#0c0a09', lethality: 3 },
-  { name: 'A Big Mom Pirates Commander', minTier: 5, weight: 1, color: '#be185d', lethality: 3 },
-  { name: 'A Beast Pirates Commander', minTier: 6, weight: 1, color: '#1e3a8a', lethality: 3 },
-  { name: 'Charlotte Linlin', minTier: 7, weight: 1, color: '#be185d', lethality: 3 },
-  { name: 'Kaido', minTier: 7, weight: 1, color: '#1e3a8a', lethality: 3 },
+  { name: "Alvida's Gang", minTier: 0, profile: profile(0, 0, 0, 0, {}, 0), weight: 4, color: '#7f1d1d', lethality: 1 },
+  {
+    name: "Buggy's Crew",
+    minTier: 0,
+    profile: profile(1, 1, 1, 1, {}, 1, 1),
+    weight: 4,
+    color: '#dc2626',
+    lethality: 1,
+  },
+  {
+    name: 'A drunken island bandit crew',
+    minTier: 0,
+    profile: profile(0, 0, 0, 0, {}, 0),
+    weight: 3,
+    color: '#78350f',
+    lethality: 1,
+  },
+  {
+    name: "Bellamy's Crew",
+    minTier: 1,
+    profile: profile(2, 3, 2, 2, {}, 2, 2),
+    weight: 3,
+    color: '#f97316',
+    lethality: 1,
+  },
+  {
+    name: "Foxy's Crew",
+    minTier: 1,
+    profile: profile(1, 2, 1, 2, {}, 1, 1),
+    weight: 3,
+    color: '#ea580c',
+    lethality: 0,
+  },
+  {
+    name: "Krieg's Remnants",
+    minTier: 2,
+    profile: profile(2, 1, 3, 2, {}, 2),
+    weight: 2,
+    color: '#57534e',
+    lethality: 2,
+  },
+  {
+    name: 'A Baroque Works Agent',
+    minTier: 2,
+    profile: profile(2, 2, 2, 2, {}, 2, 2),
+    weight: 2,
+    color: '#334155',
+    lethality: 2,
+  },
+  {
+    name: "Hawkins' Crew",
+    minTier: 3,
+    profile: profile(4, 3, 3, 3, { Armament: 'Basic' }, 3, 3),
+    weight: 2,
+    color: '#581c87',
+    lethality: 2,
+  },
+  {
+    name: "Capone Bege's Crew",
+    minTier: 3,
+    profile: profile(4, 2, 5, 3, { Armament: 'Basic' }, 3, 3),
+    weight: 2,
+    color: '#1e293b',
+    lethality: 2,
+  },
+  {
+    name: 'Kid & Killer',
+    minTier: 4,
+    profile: profile(6, 4, 5, 5, { Armament: 'Advanced', "Conqueror's": 'Basic' }, 4, 4),
+    weight: 2,
+    color: '#dc2626',
+    lethality: 2,
+  },
+  {
+    name: "Bonney's Crew",
+    minTier: 4,
+    profile: profile(5, 3, 3, 4, {}, 3, 3),
+    weight: 2,
+    color: '#f472b6',
+    lethality: 1,
+  },
+  {
+    name: "Blackbeard's Crew",
+    minTier: 5,
+    profile: profile(7, 4, 6, 5, { Armament: 'Basic' }, 4, 4),
+    weight: 2,
+    color: '#0c0a09',
+    lethality: 3,
+  },
+  {
+    // Sweet/All-Star Commanders sit just below the true Yonko-tier ceiling below.
+    name: 'A Big Mom Pirates Commander',
+    minTier: 5,
+    profile: profile(8, 7, 7, 6, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Basic' }, 5, 4),
+    weight: 1,
+    color: '#be185d',
+    lethality: 3,
+  },
+  {
+    name: 'A Beast Pirates Commander',
+    minTier: 6,
+    profile: profile(8, 6, 8, 6, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
+    weight: 1,
+    color: '#1e3a8a',
+    lethality: 3,
+  },
+  {
+    // Big Mom sits at the ceiling of what canon has shown — alongside Kaido, Akainu,
+    // Blackbeard, and Shanks.
+    name: 'Charlotte Linlin',
+    minTier: 7,
+    profile: profile(9, 6, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
+    weight: 1,
+    color: '#be185d',
+    lethality: 3,
+  },
+  {
+    // "The strongest creature" — tied at the very top of what canon has depicted, deliberately
+    // just below the reserved player-only tiers (Moon Level and up, FTL+, Absolute endurance).
+    name: 'Kaido',
+    minTier: 7,
+    profile: profile(9, 6, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
+    weight: 1,
+    color: '#1e3a8a',
+    lethality: 3,
+  },
 ]
 
 export const WORLD_EVENT_THREATS: NpcDef[] = [
-  { name: 'A Sea King', minTier: 1, weight: 3, color: '#0c4a6e', lethality: 2 },
-  { name: 'A desperate rival captain', minTier: 2, weight: 3, color: '#7f1d1d', lethality: 1 },
-  { name: 'The raging storm itself', minTier: 2, weight: 3, color: '#0369a1', lethality: 2 },
-  { name: 'A rampaging Marine fleet', minTier: 3, weight: 3, color: '#1d4ed8', lethality: 2 },
-  { name: 'An Ancient Weapon guardian', minTier: 4, weight: 2, color: '#374151', lethality: 3 },
-  { name: 'A CP0 black-ops agent', minTier: 4, weight: 2, color: '#1c1917', lethality: 3 },
-  { name: 'A rival Yonko commander', minTier: 5, weight: 2, color: '#7c2d12', lethality: 3 },
+  { name: 'A Sea King', minTier: 1, profile: profile(3, 2, 4, 3, {}, 0), weight: 3, color: '#0c4a6e', lethality: 2 },
+  {
+    name: 'A desperate rival captain',
+    minTier: 2,
+    profile: profile(2, 2, 2, 2, {}, 2),
+    weight: 3,
+    color: '#7f1d1d',
+    lethality: 1,
+  },
+  {
+    name: 'The raging storm itself',
+    minTier: 2,
+    profile: profile(3, 2, 4, 2, {}, 0),
+    weight: 3,
+    color: '#0369a1',
+    lethality: 2,
+  },
+  {
+    name: 'A rampaging Marine fleet',
+    minTier: 3,
+    profile: profile(4, 2, 4, 3, { Armament: 'Basic' }, 2),
+    weight: 3,
+    color: '#1d4ed8',
+    lethality: 2,
+  },
+  {
+    name: 'An Ancient Weapon guardian',
+    minTier: 4,
+    profile: profile(8, 4, 9, 6, {}, 0),
+    weight: 2,
+    color: '#374151',
+    lethality: 3,
+  },
+  {
+    name: 'A CP0 black-ops agent',
+    minTier: 4,
+    profile: profile(6, 5, 5, 5, { Armament: 'Advanced', Observation: 'Advanced' }, 4),
+    weight: 2,
+    color: '#1c1917',
+    lethality: 3,
+  },
+  {
+    name: 'A rival Yonko commander',
+    minTier: 5,
+    profile: profile(8, 6, 7, 6, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
+    weight: 2,
+    color: '#7c2d12',
+    lethality: 3,
+  },
+  {
+    // An elite guard serving directly under the Five Elders/Imu at Mary Geoise — a real,
+    // confirmed group; kept generic rather than naming a specific individual we're less sure of.
+    name: 'A Holy Knight',
+    minTier: 5,
+    profile: profile(6, 5, 6, 5, { Armament: 'Advanced' }, 4),
+    weight: 2,
+    color: '#e5e7eb',
+    lethality: 3,
+  },
+  {
+    // One of the Five Elders — shown transforming into an immense Ancient/Mythical Zoan
+    // "Guardian Deity" form at Egghead, threatening city-scale devastation in a single blow.
+    name: 'Saint Jaygarcia Saturn',
+    minTier: 6,
+    profile: profile(9, 5, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 1,
+    color: '#f3f4f6',
+    lethality: 3,
+  },
+  {
+    // The mysterious figure on the Empty Throne, above even the Five Elders — deliberately kept
+    // shrouded in canon, so no confirmed Devil Fruit here either.
+    name: 'Imu',
+    minTier: 7,
+    profile: profile(9, 6, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
+    weight: 1,
+    color: '#18181b',
+    lethality: 3,
+  },
 ]
 
 export const RIVAL_ROSTER: NpcDef[] = [
-  { name: 'Duval', minTier: 0, weight: 3, color: '#b45309', lethality: 0 },
-  { name: 'Mr. 9', minTier: 0, weight: 2, color: '#78716c', lethality: 1 },
-  { name: 'Arlong', minTier: 1, weight: 3, color: '#0891b2', lethality: 2 },
-  { name: 'Bellamy', minTier: 1, weight: 2, color: '#f97316', lethality: 1 },
-  { name: 'Caesar Clown', minTier: 2, weight: 2, color: '#84cc16', lethality: 2 },
-  { name: 'Capone Bege', minTier: 3, weight: 2, color: '#1e293b', lethality: 2 },
-  { name: 'Crocodile', minTier: 4, weight: 2, color: '#eab308', lethality: 2 },
-  { name: 'Gecko Moria', minTier: 4, weight: 2, color: '#581c87', lethality: 2 },
-  { name: 'Donquixote Doflamingo', minTier: 5, weight: 2, color: '#ec4899', lethality: 3 },
-  { name: 'Marshall D. Teach "Blackbeard"', minTier: 6, weight: 1, color: '#450a0a', lethality: 3 },
-  { name: 'Shanks', minTier: 7, weight: 1, color: '#dc2626', lethality: 2 },
+  { name: 'Duval', minTier: 0, profile: profile(1, 1, 1, 2, {}, 1), weight: 3, color: '#b45309', lethality: 0 },
+  { name: 'Mr. 9', minTier: 0, profile: profile(0, 0, 0, 1, {}, 0), weight: 2, color: '#78716c', lethality: 1 },
+  { name: 'Arlong', minTier: 1, profile: profile(3, 2, 3, 3, {}, 2), weight: 3, color: '#0891b2', lethality: 2 },
+  {
+    name: 'Bellamy',
+    minTier: 1,
+    profile: profile(2, 3, 2, 2, {}, 2, 2),
+    weight: 2,
+    color: '#f97316',
+    lethality: 1,
+  },
+  {
+    name: 'Caesar Clown',
+    minTier: 2,
+    profile: profile(4, 3, 3, 3, {}, 2, 3),
+    weight: 2,
+    color: '#84cc16',
+    lethality: 2,
+  },
+  {
+    name: 'Capone Bege',
+    minTier: 3,
+    profile: profile(4, 2, 5, 3, { Armament: 'Basic' }, 3, 3),
+    weight: 2,
+    color: '#1e293b',
+    lethality: 2,
+  },
+  {
+    name: 'Crocodile',
+    minTier: 4,
+    profile: profile(7, 4, 6, 5, { Armament: 'Advanced', Observation: 'Basic' }, 4, 4),
+    weight: 2,
+    color: '#eab308',
+    lethality: 2,
+  },
+  {
+    name: 'Gecko Moria',
+    minTier: 4,
+    profile: profile(6, 3, 5, 5, { Armament: 'Basic' }, 4, 4),
+    weight: 2,
+    color: '#581c87',
+    lethality: 2,
+  },
+  {
+    // A former Warlord, extremely dangerous, but a notch below the true Yonko-tier ceiling.
+    name: 'Donquixote Doflamingo',
+    minTier: 5,
+    profile: profile(8, 6, 7, 6, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Basic' }, 5, 5),
+    weight: 2,
+    color: '#ec4899',
+    lethality: 3,
+  },
+  {
+    // Two Devil Fruits, Yonko-tier — sits at the very ceiling alongside Kaido/Big Mom/Akainu.
+    name: 'Marshall D. Teach "Blackbeard"',
+    minTier: 6,
+    profile: profile(9, 5, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
+    weight: 1,
+    color: '#450a0a',
+    lethality: 3,
+  },
+  {
+    // Widely regarded as top-tier even one-armed — no Devil Fruit, so his score leans entirely
+    // on stats/Haki/mastery rather than the Devil Fruit slice of the formula.
+    name: 'Shanks',
+    minTier: 7,
+    profile: profile(9, 7, 8, 7, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
+    weight: 1,
+    color: '#dc2626',
+    lethality: 2,
+  },
+  {
+    // A dangerous, god-revered Giant antagonist encountered in Elbaf — elite tier, a notch
+    // below the very top of the roster, with a Giant's raw physical stats rather than speed.
+    name: 'Loki',
+    minTier: 5,
+    profile: profile(8, 4, 8, 6, { Armament: 'Advanced', Observation: 'Basic' }, 4, 3),
+    weight: 2,
+    color: '#4338ca',
+    lethality: 3,
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -601,39 +1212,29 @@ export const MAJOR_PIRATE_CREWS: WheelOption[] = [
   opt('Rocks Pirates', 1, '#111827'),
 ]
 
-/** Which "weak / medium / strong" band a tier (0-7) falls into. */
-function tierBand(t: number): 'weak' | 'medium' | 'strong' {
-  if (t <= 2) return 'weak'
-  if (t <= 5) return 'medium'
-  return 'strong'
-}
-
-function isAdjacentBand(a: 'weak' | 'medium' | 'strong', b: 'weak' | 'medium' | 'strong'): boolean {
-  if (a === b) return false
-  return a === 'medium' || b === 'medium'
-}
+/** How much an NPC's own weight shrinks per tier of distance from the player's current
+ * rank/bounty tier — lower means a steeper falloff (rarer to run into a badly-mismatched foe). */
+const ENCOUNTER_TIER_DECAY = 0.45
 
 /**
- * Builds wheel options from an NPC roster, biased hard toward opponents in the player's own
- * weak/medium/strong strength band (with a thinned-out chance of an adjacent band), so a
- * high-rank player mostly faces serious threats instead of leftover fodder — and excludes
- * anyone already killed off.
+ * Builds wheel options from an NPC roster, continuously reweighted so the higher the player's
+ * current rank/bounty tier climbs, the more the odds shift toward encountering opponents whose
+ * own minTier sits close to (or above) it — every tier of distance shrinks an NPC's weight
+ * further, rather than gating by a few coarse bands. Nobody is ever fully excluded (a legend
+ * can still stumble on small fry, and a nobody can still run into someone way out of their
+ * league), it just gets steadily rarer the further apart they are — and anyone already killed
+ * off is excluded entirely.
  */
 export function npcOptions(pool: NpcDef[], state: CharacterState): WheelOption[] {
-  const playerBand = tierBand(tierIndex(state))
+  const playerTier = tierIndex(state)
   const alive = pool.filter((n) => !state.deceased.has(n.name))
-  const sameBand = alive.filter((n) => tierBand(n.minTier) === playerBand)
-  const adjacentBand = alive.filter((n) => isAdjacentBand(playerBand, tierBand(n.minTier)))
-
-  let list: NpcDef[]
-  if (sameBand.length > 0) {
-    list = [...sameBand, ...adjacentBand.map((n) => ({ ...n, weight: Math.max(1, Math.round(n.weight * 0.25)) }))]
-  } else if (adjacentBand.length > 0) {
-    list = adjacentBand
-  } else {
-    list = alive.length > 0 ? alive : pool
-  }
-  return list.map((n) => opt(n.name, n.weight, n.color))
+  const candidates = alive.length > 0 ? alive : pool
+  return candidates.map((n) => {
+    const distance = Math.abs(n.minTier - playerTier)
+    const decay = Math.pow(ENCOUNTER_TIER_DECAY, distance)
+    const weight = Math.max(1, Math.round(n.weight * decay * 10))
+    return opt(n.name, weight, n.color)
+  })
 }
 
 const ALL_NPCS: NpcDef[] = [
@@ -644,9 +1245,11 @@ const ALL_NPCS: NpcDef[] = [
   ...RIVAL_ROSTER,
 ]
 
-/** Looks up a named opponent's rough strength band (0-7); unknown names default to mid-strength. */
+/** Looks up a named opponent's 1-100 overall-strength rating; unknown names default to a
+ * moderate mid-strength value. */
 export function npcStrength(name: string): number {
-  return ALL_NPCS.find((n) => n.name === name)?.minTier ?? 3
+  const npc = ALL_NPCS.find((n) => n.name === name)
+  return npc ? overallStrengthFromProfile(npc.profile) : 30
 }
 
 /** Looks up a named opponent's lethality (0-3); unknown names default to moderate. */
@@ -659,15 +1262,13 @@ export function npcLethality(name: string): number {
  * strength relative to the player, how lethal/villainous they are, and situational risk.
  */
 export function survivalOdds(state: CharacterState, opponentName: string, extraRisk = 0): WheelOption[] {
-  const playerTier = tierIndex(state)
-  const opponentTier = npcStrength(opponentName)
+  const difficulty = -combatEdge(state, opponentName) // positive = they had the edge on me
   const lethality = npcLethality(opponentName)
-  const diff = opponentTier - playerTier
-  const dieWeight = Math.min(9, Math.max(0, Math.round(diff * 0.8 + lethality * 1.6 + extraRisk)))
-  const surviveWeight = Math.max(1, 10 - dieWeight)
+  const dieWeight = Math.min(95, Math.max(1, Math.round(10 + difficulty * 2 + lethality * 12 + extraRisk * 8)))
+  const surviveWeight = 100 - dieWeight
   return [
     opt('Yes', surviveWeight, '#16a34a'),
-    opt('No', Math.max(1, dieWeight), '#7f1d1d'),
+    opt('No', dieWeight, '#7f1d1d'),
   ]
 }
 
@@ -681,11 +1282,9 @@ export function fightOddsOptions(
   flavorYes: string,
   flavorNo: string,
 ): WheelOption[] {
-  const playerScore = playerPowerScore(state)
-  const opponentScore = npcStrength(opponentName) * 6
-  const diff = playerScore - opponentScore + (state.pendingTacticBonus ?? 0)
-  const winWeight = Math.min(9, Math.max(1, Math.round(5 + diff * 0.4)))
-  const loseWeight = 10 - winWeight
+  const edge = combatEdge(state, opponentName) + (state.pendingTacticBonus ?? 0)
+  const winWeight = logisticWeight(edge, FIGHT_EDGE_SCALE)
+  const loseWeight = 100 - winWeight
   return [
     opt('Yes', winWeight, '#16a34a', flavorYes),
     opt('No', loseWeight, '#dc2626', flavorNo),
@@ -699,11 +1298,12 @@ export const TACTIC_OPTIONS: WheelOption[] = [
   opt('Call for backup', 2, '#1d4ed8'),
 ]
 
+// Rescaled to sit alongside the 1-100 overall-strength gap used in fightOddsOptions.
 const TACTIC_BONUSES: Record<string, number> = {
   'Frontal assault': 0,
-  Ambush: 3,
-  'Use your Devil Fruit': 5,
-  'Call for backup': 2,
+  Ambush: 6,
+  'Use your Devil Fruit': 10,
+  'Call for backup': 4,
 }
 
 export function tacticBonus(label: string): number {

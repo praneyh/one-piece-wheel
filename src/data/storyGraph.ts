@@ -33,7 +33,6 @@ import {
   TACTIC_OPTIONS,
   WORLD_EVENT_REACTIONS,
   WORLD_EVENT_THREATS,
-  applyRaceModToTier,
   fightOddsOptions,
   fruitListForType,
   fullRankOptions,
@@ -49,8 +48,10 @@ import {
   npcOptions,
   opt,
   poneglyphFindOdds,
+  raceAdjustedStatTierOptions,
   rankIncreaseOdds,
   rankLadderFor,
+  rankPressureWeight,
   survivalOdds,
   tacticBonus,
   tierIndex,
@@ -158,6 +159,7 @@ function applyLossConsequence(state: CharacterState, label: string): CharacterSt
 }
 
 const HAKI_PRESET_MAP: Record<string, Partial<Record<HakiType, HakiLevel>>> = {
+  None: {},
   Armament: { Armament: 'Basic' },
   Observation: { Observation: 'Basic' },
   "Conqueror's": { "Conqueror's": 'Basic' },
@@ -210,6 +212,36 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '❓',
     options: RACES.map((r) => opt(r.label, r.weight, r.color, r.blurb)),
     onSelect: (state, label) => ({ ...state, race: label }),
+    next: (_state, label) => (label === 'Hybrid' ? 'raceHybrid1' : 'devilFruitStart'),
+  },
+
+  // ---- Hybrid race: spin twice more for the two component races -----------
+  raceHybrid1: {
+    type: 'wheel',
+    id: 'raceHybrid1',
+    category: 'Hybrid',
+    question: "What's your first race?",
+    icon: '🧬',
+    options: RACES.filter((r) => r.label !== 'Hybrid').map((r) => opt(r.label, r.weight, r.color, r.blurb)),
+    onSelect: (state, label) => ({ ...state, pendingHybridRace1: label }),
+    next: 'raceHybrid2',
+  },
+
+  raceHybrid2: {
+    type: 'wheel',
+    id: 'raceHybrid2',
+    category: 'Hybrid',
+    question: "What's your second race?",
+    icon: '🧬',
+    options: (state) =>
+      RACES.filter((r) => r.label !== 'Hybrid' && r.label !== state.pendingHybridRace1).map((r) =>
+        opt(r.label, r.weight, r.color, r.blurb),
+      ),
+    onSelect: (state, label) => ({
+      ...state,
+      race: `${state.pendingHybridRace1} / ${label} Hybrid`,
+      raceComponents: [state.pendingHybridRace1 ?? 'Human', label],
+    }),
     next: 'devilFruitStart',
   },
 
@@ -296,18 +328,17 @@ export const STORY_GRAPH: StoryGraph = {
     next: 'statStartPower',
   },
 
-  // ---- starting stats (rolled, then shifted by race) -----------------------
+  // ---- starting stats (each wheel's own labels are already race-adjusted, so whatever it
+  // lands on IS the final tier — a race bonus is a guaranteed floor, not a roll that could
+  // still land under it) --------------------------------------------------------------------
   statStartPower: {
     type: 'wheel',
     id: 'statStartPower',
     category: 'Stats',
     question: 'What is your power level?',
     icon: '💥',
-    options: STAT_TIER_OPTIONS.power,
-    onSelect: (state, label) => ({
-      ...state,
-      stats: { ...state.stats, power: applyRaceModToTier(state, 'power', label) },
-    }),
+    options: (state) => raceAdjustedStatTierOptions(state, 'power'),
+    onSelect: (state, label) => ({ ...state, stats: { ...state.stats, power: label } }),
     next: 'statStartSpeed',
   },
 
@@ -317,11 +348,8 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Stats',
     question: 'How fast are you?',
     icon: '💨',
-    options: STAT_TIER_OPTIONS.speed,
-    onSelect: (state, label) => ({
-      ...state,
-      stats: { ...state.stats, speed: applyRaceModToTier(state, 'speed', label) },
-    }),
+    options: (state) => raceAdjustedStatTierOptions(state, 'speed'),
+    onSelect: (state, label) => ({ ...state, stats: { ...state.stats, speed: label } }),
     next: 'statStartDurability',
   },
 
@@ -331,11 +359,8 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Stats',
     question: 'How much can you take?',
     icon: '🛡️',
-    options: STAT_TIER_OPTIONS.durability,
-    onSelect: (state, label) => ({
-      ...state,
-      stats: { ...state.stats, durability: applyRaceModToTier(state, 'durability', label) },
-    }),
+    options: (state) => raceAdjustedStatTierOptions(state, 'durability'),
+    onSelect: (state, label) => ({ ...state, stats: { ...state.stats, durability: label } }),
     next: 'statStartEndurance',
   },
 
@@ -345,11 +370,8 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Stats',
     question: 'How long can you keep going?',
     icon: '🔋',
-    options: STAT_TIER_OPTIONS.endurance,
-    onSelect: (state, label) => ({
-      ...state,
-      stats: { ...state.stats, endurance: applyRaceModToTier(state, 'endurance', label) },
-    }),
+    options: (state) => raceAdjustedStatTierOptions(state, 'endurance'),
+    onSelect: (state, label) => ({ ...state, stats: { ...state.stats, endurance: label } }),
     next: 'haki',
   },
 
@@ -361,6 +383,7 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'What types do you have?',
     icon: '🥊',
     options: [
+      opt('None', 6, '#374151'),
       opt('Armament', 10, '#7f1d1d'),
       opt('Observation', 10, '#991b1b'),
       opt("Conqueror's", 4, '#b91c1c'),
@@ -449,10 +472,8 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Word of your exploits spreads', 3, '#0d9488'),
       ]
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
-      if (isAtMaxRank(state)) {
-        options.push(opt('Retire from the sea', 2, '#fbbf24'))
-      } else {
-        options.push(opt('Get a new bounty', 3, '#0d9488'))
+      if (!isAtMaxRank(state)) {
+        options.push(opt('Get a new bounty', rankPressureWeight(state, 3), '#0d9488'))
       }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
@@ -480,7 +501,6 @@ export const STORY_GRAPH: StoryGraph = {
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Word of your exploits spreads': 'reputationSpread',
         'Get a new bounty': 'rankJump',
-        'Retire from the sea': 'ending',
       }
       return routes[label] ?? 'hubPirate'
     },
@@ -508,10 +528,8 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Your service is recognized', 3, '#0d9488'),
       ]
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
-      if (isAtMaxRank(state)) {
-        options.push(opt('Step down from command', 2, '#fbbf24'))
-      } else {
-        options.push(opt('Get promoted', 4, '#0d9488'))
+      if (!isAtMaxRank(state)) {
+        options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
       }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
@@ -539,7 +557,6 @@ export const STORY_GRAPH: StoryGraph = {
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Your service is recognized': 'reputationSpread',
         'Get promoted': 'rankJump',
-        'Step down from command': 'ending',
       }
       return routes[label] ?? 'hubMarine'
     },
@@ -567,10 +584,8 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Your cause gains sympathizers', 3, '#0d9488'),
       ]
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
-      if (isAtMaxRank(state)) {
-        options.push(opt('End the revolution', 2, '#fbbf24'))
-      } else {
-        options.push(opt('Get promoted', 4, '#0d9488'))
+      if (!isAtMaxRank(state)) {
+        options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
       }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
@@ -598,7 +613,6 @@ export const STORY_GRAPH: StoryGraph = {
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Your cause gains sympathizers': 'reputationSpread',
         'Get promoted': 'rankJump',
-        'End the revolution': 'ending',
       }
       return routes[label] ?? 'hubRevolutionary'
     },
@@ -1216,7 +1230,7 @@ export const STORY_GRAPH: StoryGraph = {
     id: 'growthCheckGeneric',
     question: 'Do you grow from this experience?',
     icon: '📈',
-    options: growthOddsGeneric,
+    options: (state) => growthOddsGeneric(state.pendingEventRarityWeight),
     next: growthCheckNext,
   },
 
@@ -1268,7 +1282,14 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'Does it pay off?',
     icon: '💰',
     options: [opt('Yes', 4, '#16a34a'), opt('No', 6, '#374151')],
-    onSelect: (state) => ({ ...state, lastOpponent: undefined, pendingReturnNode: hubIdFor(state) }),
+    // "You discover ancient ruins" is weight 3 on the hub wheel — a fairly rare pull — so the
+    // growth check downstream should reflect that rarity.
+    onSelect: (state) => ({
+      ...state,
+      lastOpponent: undefined,
+      pendingReturnNode: hubIdFor(state),
+      pendingEventRarityWeight: 3,
+    }),
     next: (state, label) =>
       label === 'Yes' && !isAtMaxRank(state) ? 'rankIncreaseTarget' : growthCheckIdFor(state),
   },
@@ -1319,7 +1340,14 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'Does it pay off?',
     icon: '📯',
     options: [opt('Yes', 4, '#16a34a'), opt('No', 6, '#374151')],
-    onSelect: (state) => ({ ...state, lastOpponent: undefined, pendingReturnNode: hubIdFor(state) }),
+    // Its hub weight is 3 across all three affiliations — a fairly rare pull — so the growth
+    // check downstream should reflect that rarity.
+    onSelect: (state) => ({
+      ...state,
+      lastOpponent: undefined,
+      pendingReturnNode: hubIdFor(state),
+      pendingEventRarityWeight: 3,
+    }),
     next: (state, label) =>
       label === 'Yes' && !isAtMaxRank(state) ? 'rankIncreaseTarget' : growthCheckIdFor(state),
   },
