@@ -1072,13 +1072,48 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     lethality: 3,
   },
   {
-    // An elite guard serving directly under the Five Elders/Imu at Mary Geoise — a real,
-    // confirmed group; kept generic rather than naming a specific individual we're less sure of.
-    name: 'A Holy Knight',
+    // Commander of the Knights of God, second in authority only to Garling himself — Garling
+    // once suggested Shanks might reach Shamrock's level only after receiving a Covenant.
+    // Immortal, Awakened Mythical Zoan (Cerberus) blade, Haki potent enough to be sensed as
+    // abnormal by a Roger-era legend.
+    name: 'Figarland Shamrock',
+    minTier: 7,
+    profile: profile(9, 7, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
+    weight: 1,
+    color: '#1e1b4b',
+    lethality: 3,
+  },
+  {
+    // Overwhelmed four Straw Hats (including Jinbe) and defeated Scopper Gaban — mostly through
+    // ruthless cunning rather than a clean power advantage. Immortal, master swordswoman
+    // (trained by Brook), Aro Aro no Mi.
+    name: 'Manmayer Gunko',
+    minTier: 6,
+    profile: profile(8, 6, 7, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Basic' }, 5, 4),
+    weight: 1,
+    color: '#7c2d92',
+    lethality: 3,
+  },
+  {
+    // Explicitly the weakest Knight of God shown — easily beaten by Gaban, Rayleigh, Luffy, and
+    // Loki — but still overpowered an ex-Vice Admiral and Nico Robin with ease. Immortal
+    // (regenerates even from decapitation), Iba Iba no Mi (thorned vines).
+    name: 'Shepherd Sommers',
     minTier: 5,
-    profile: profile(6, 5, 6, 5, { Armament: 'Advanced' }, 4),
+    profile: profile(6, 4, 7, 8, { Armament: 'Advanced', Observation: 'Basic', "Conqueror's": 'Basic' }, 3, 4),
     weight: 2,
-    color: '#e5e7eb',
+    color: '#3f6212',
+    lethality: 3,
+  },
+  {
+    // Beats multiple giants with ease but was easily defeated by three Straw Hats without them
+    // needing Conqueror's Haki. Immortal, Awakened Mythical Zoan (Ryu Ryu no Mi, Model: Kirin),
+    // plus a unique dream-manifestation/sleep-inducing ability.
+    name: 'Rimoshifu Killingham',
+    minTier: 6,
+    profile: profile(7, 5, 7, 8, { Armament: 'Advanced', Observation: 'Basic', "Conqueror's": 'Basic' }, 3, 5),
+    weight: 1,
+    color: '#78350f',
     lethality: 3,
   },
   {
@@ -1092,6 +1127,40 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     lethality: 3,
   },
   {
+    // One of the Five Elders — canon implies all five wield comparably overwhelming,
+    // Ancient/Mythical Zoan-tier power to Saturn's.
+    name: 'Saint Marcus Mars',
+    minTier: 6,
+    profile: profile(9, 6, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 1,
+    color: '#e5e7eb',
+    lethality: 3,
+  },
+  {
+    name: 'Saint Topman Warcury',
+    minTier: 6,
+    profile: profile(8, 6, 8, 7, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
+    weight: 1,
+    color: '#d1d5db',
+    lethality: 3,
+  },
+  {
+    name: 'Saint Ethanbaron V. Nusjuro',
+    minTier: 6,
+    profile: profile(8, 5, 9, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 4),
+    weight: 1,
+    color: '#9ca3af',
+    lethality: 3,
+  },
+  {
+    name: 'Saint Shepherd Ju Peng',
+    minTier: 6,
+    profile: profile(9, 7, 7, 6, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 1,
+    color: '#f9fafb',
+    lethality: 3,
+  },
+  {
     // The mysterious figure on the Empty Throne, above even the Five Elders — deliberately kept
     // shrouded in canon, so no confirmed Devil Fruit here either.
     name: 'Imu',
@@ -1099,6 +1168,16 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(9, 6, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
     weight: 1,
     color: '#18181b',
+    lethality: 3,
+  },
+  {
+    // Revealed as the true King commanding even the Five Elders — the same treatment as Imu:
+    // absolute authority, no confirmed personal combat feats shown on-screen, so no Devil Fruit.
+    name: 'Garling Figarland',
+    minTier: 7,
+    profile: profile(9, 7, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
+    weight: 1,
+    color: '#27272a',
     lethality: 3,
   },
 ]
