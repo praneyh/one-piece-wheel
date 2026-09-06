@@ -188,9 +188,9 @@ export function bloodlineDef(state: CharacterState): BloodlineDef | undefined {
   return state.bloodline ? BLOODLINES.find((b) => b.label === state.bloodline) : undefined
 }
 
-/** A fixed, deliberately not-stat-dependent ~7% chance of carrying a special bloodline. */
+/** A fixed, deliberately not-stat-dependent 20% chance of carrying a special bloodline. */
 export function bloodlineCheckOdds(): WheelOption[] {
-  return [opt('Yes', 7, '#facc15'), opt('No', 93, '#374151')]
+  return [opt('Yes', 20, '#facc15'), opt('No', 80, '#374151')]
 }
 
 export function bloodlineOptions(): WheelOption[] {
