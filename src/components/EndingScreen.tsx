@@ -81,6 +81,7 @@ export default function EndingScreen({ character, onRestart }: Props) {
       <div className="mt-2 w-full max-w-sm space-y-2 rounded-2xl border border-amber-700/25 bg-neutral-900/80 p-5 text-left text-sm text-neutral-200 shadow-[0_0_0_1px_rgba(232,193,104,0.05)] backdrop-blur">
         <Row label="Affiliation" value={character.affiliation} />
         <Row label="Race" value={character.race} />
+        {character.bloodline && <Row label="Bloodline" value={character.bloodline} />}
         <Row label="Final Rank" value={character.rank} />
         {STAT_KEYS.map((key) => (
           <Row key={key} label={STAT_LABELS[key]} value={String(character.stats[key])} />

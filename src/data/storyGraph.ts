@@ -14,8 +14,6 @@ import {
 } from '../types'
 import {
   CREW_ROLES,
-  CREW_SIZE_OPTIONS,
-  CREW_STRENGTH_OPTIONS,
   DEVIL_FRUIT_DISPOSAL,
   DEVIL_FRUIT_MASTERY_LEVELS,
   DEVIL_FRUIT_TYPES,
@@ -33,6 +31,12 @@ import {
   TACTIC_OPTIONS,
   WORLD_EVENT_REACTIONS,
   WORLD_EVENT_THREATS,
+  bloodlineCheckOdds,
+  bloodlineDef,
+  bloodlineOptions,
+  bumpMasteryLevel,
+  crewSizeOptionsFor,
+  crewStrengthOptionsFor,
   fightOddsOptions,
   fruitListForType,
   fullRankOptions,
@@ -47,6 +51,7 @@ import {
   higherStatOptions,
   immortalizeOption,
   marineRosterOptions,
+  meetsHakiFloor,
   npcOptions,
   opt,
   poneglyphFindOdds,
@@ -135,6 +140,16 @@ function withPoneglyph(state: CharacterState): CharacterState {
   }
 }
 
+/** Multiplies the "World Event" option's weight in place if the player's bloodline boosts it
+ * (Monkey D. Family's destiny effect) — mutates the array passed in, matching how the other
+ * conditional hub-option pushes above already work. */
+function applyWorldEventBoost(state: CharacterState, options: WheelOption[]): void {
+  const mult = bloodlineDef(state)?.worldEventWeightMultiplier
+  if (!mult) return
+  const idx = options.findIndex((o) => o.label === 'World Event')
+  if (idx !== -1) options[idx] = { ...options[idx], weight: options[idx].weight * mult }
+}
+
 function setLastCrewmateStrength(state: CharacterState, label: string): CharacterState {
   if (state.crew.length === 0) return state
   const crew = [...state.crew]
@@ -181,6 +196,20 @@ const HAKI_PRESET_MAP: Record<string, Partial<Record<HakiType, HakiLevel>>> = {
   'All 3 Advanced': { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' },
 }
 
+const HAKI_OPTIONS: WheelOption[] = [
+  opt('None', 6, '#374151'),
+  opt('Armament', 10, '#7f1d1d'),
+  opt('Observation', 10, '#991b1b'),
+  opt("Conqueror's", 4, '#b91c1c'),
+  opt('Armament & Observation', 8, '#dc2626'),
+  opt("Conqueror's & Observation", 4, '#ef4444'),
+  opt('All 3 Basic', 3, '#f87171'),
+  opt('Advanced Armament', 3, '#fca5a5'),
+  opt('Advanced Observation', 3, '#fecaca'),
+  opt("Advance Conqueror's & Observation", 2, '#450a0a'),
+  opt('All 3 Advanced', 1, '#fde047'),
+]
+
 function hakiRecapNode(id: string, next: string | ((state: CharacterState) => string)) {
   return {
     type: 'recap' as const,
@@ -221,7 +250,7 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '❓',
     options: RACES.map((r) => opt(r.label, r.weight, r.color, r.blurb)),
     onSelect: (state, label) => ({ ...state, race: label }),
-    next: (_state, label) => (label === 'Hybrid' ? 'raceHybrid1' : 'devilFruitStart'),
+    next: (_state, label) => (label === 'Hybrid' ? 'raceHybrid1' : 'bloodlineCheck'),
   },
 
   // ---- Hybrid race: spin twice more for the two component races -----------
@@ -251,17 +280,42 @@ export const STORY_GRAPH: StoryGraph = {
       race: `${state.pendingHybridRace1} / ${label} Hybrid`,
       raceComponents: [state.pendingHybridRace1 ?? 'Human', label],
     }),
+    next: 'bloodlineCheck',
+  },
+
+  // ---- special bloodline (rare, ~7%) --------------------------------------
+  bloodlineCheck: {
+    type: 'wheel',
+    id: 'bloodlineCheck',
+    category: 'One Piece',
+    question: 'Do you carry a special bloodline?',
+    icon: '🩸',
+    options: bloodlineCheckOdds,
+    next: (_state, label) => (label === 'Yes' ? 'bloodlineType' : 'devilFruitStart'),
+  },
+
+  bloodlineType: {
+    type: 'wheel',
+    id: 'bloodlineType',
+    category: 'One Piece',
+    question: 'Which bloodline?',
+    icon: '🩸',
+    options: bloodlineOptions,
+    onSelect: (state, label) => ({ ...state, bloodline: label }),
     next: 'devilFruitStart',
   },
 
-  // ---- starting devil fruit (~30%) ------------------------------------
+  // ---- starting devil fruit (~30% base, bloodline can raise it) -----------
   devilFruitStart: {
     type: 'wheel',
     id: 'devilFruitStart',
     category: 'Devil Fruit',
     question: 'Do you already have one?',
     icon: '🍈',
-    options: [opt('Yes', 3, '#7c3aed'), opt('No', 7, '#374151')],
+    options: (state) => {
+      const bonus = bloodlineDef(state)?.devilFruitChanceBonus ?? 0
+      return [opt('Yes', 3 + bonus, '#7c3aed'), opt('No', 7, '#374151')]
+    },
     next: (_state, label) => (label === 'Yes' ? 'devilFruitStartType' : 'fightingStyle'),
   },
 
@@ -299,7 +353,11 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Training',
     question: 'What is your fighting style?',
     icon: '🥋',
-    options: FIGHTING_STYLES,
+    options: (state) => {
+      const boost = bloodlineDef(state)?.fightingStyleBoost
+      if (!boost) return FIGHTING_STYLES
+      return FIGHTING_STYLES.map((o) => (o.label === boost ? { ...o, weight: o.weight * 6 } : o))
+    },
     onSelect: (state, label) => ({ ...state, fightingStyle: label }),
     next: (_state, label) => (label === 'Swordsmanship' ? 'weapon' : 'fightingMastery'),
   },
@@ -333,7 +391,10 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'What is your mastery level?',
     icon: '📈',
     options: MASTERY_LEVELS,
-    onSelect: (state, label) => ({ ...state, fightingMastery: label }),
+    onSelect: (state, label) => ({
+      ...state,
+      fightingMastery: bumpMasteryLevel(label, bloodlineDef(state)?.masteryStartBump ?? 0),
+    }),
     next: 'statStartPower',
   },
 
@@ -391,19 +452,12 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Haki',
     question: 'What types do you have?',
     icon: '🥊',
-    options: [
-      opt('None', 6, '#374151'),
-      opt('Armament', 10, '#7f1d1d'),
-      opt('Observation', 10, '#991b1b'),
-      opt("Conqueror's", 4, '#b91c1c'),
-      opt('Armament & Observation', 8, '#dc2626'),
-      opt("Conqueror's & Observation", 4, '#ef4444'),
-      opt('All 3 Basic', 3, '#f87171'),
-      opt('Advanced Armament', 3, '#fca5a5'),
-      opt('Advanced Observation', 3, '#fecaca'),
-      opt("Advance Conqueror's & Observation", 2, '#450a0a'),
-      opt('All 3 Advanced', 1, '#fde047'),
-    ],
+    options: (state) => {
+      const floor = bloodlineDef(state)?.hakiFloor
+      if (!floor) return HAKI_OPTIONS
+      const eligible = HAKI_OPTIONS.filter((o) => meetsHakiFloor(HAKI_PRESET_MAP[o.label] ?? {}, floor))
+      return eligible.length > 0 ? eligible : HAKI_OPTIONS
+    },
     onSelect: (state, label) => ({ ...state, haki: { ...state.haki, ...HAKI_PRESET_MAP[label] } }),
     next: (_state, label) => (label === 'All 3 Advanced' ? 'hakiRecapIntro' : 'initialRank'),
   },
@@ -463,7 +517,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Crew',
     question: 'How many crewmates do you start with?',
     icon: '🧑‍🤝‍🧑',
-    options: CREW_SIZE_OPTIONS,
+    options: crewSizeOptionsFor,
     onSelect: (state, label) => ({ ...state, crewSize: Number(label) }),
     next: 'crewOriginOwnStrength',
   },
@@ -474,7 +528,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Crew',
     question: 'How do they compare to you?',
     icon: '💪',
-    options: CREW_STRENGTH_OPTIONS,
+    options: crewStrengthOptionsFor,
     onSelect: (state, label) => ({ ...state, crewStrengthTier: label }),
     next: hubIdFor,
   },
@@ -503,6 +557,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('A legendary master offers to train you', 2, '#facc15'),
         opt('Word of your exploits spreads', 3, '#0d9488'),
       ]
+      applyWorldEventBoost(state, options)
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get a new bounty', rankPressureWeight(state, 3), '#0d9488'))
@@ -566,6 +621,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('A legendary master offers to train you', 2, '#facc15'),
         opt('Your service is recognized', 3, '#0d9488'),
       ]
+      applyWorldEventBoost(state, options)
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
@@ -629,6 +685,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('A legendary master offers to train you', 2, '#facc15'),
         opt('Your cause gains sympathizers', 3, '#0d9488'),
       ]
+      applyWorldEventBoost(state, options)
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
@@ -876,7 +933,7 @@ export const STORY_GRAPH: StoryGraph = {
     id: 'assignCrewRoleStrength',
     question: 'How do they compare to you?',
     icon: '💪',
-    options: CREW_STRENGTH_OPTIONS,
+    options: crewStrengthOptionsFor,
     onSelect: (state, label) => setLastCrewmateStrength(state, label),
     next: hubIdFor,
   },
@@ -898,7 +955,7 @@ export const STORY_GRAPH: StoryGraph = {
     id: 'gainCrewmatesStrength',
     question: 'How do they compare to you?',
     icon: '💪',
-    options: CREW_STRENGTH_OPTIONS,
+    options: crewStrengthOptionsFor,
     onSelect: (state, label) => setLastCrewmateStrength(state, label),
     next: (state) => (state.crew.length > 0 && state.crew.length % 3 === 0 ? 'crewRecap' : hubIdFor(state)),
   },
@@ -1237,7 +1294,7 @@ export const STORY_GRAPH: StoryGraph = {
     id: 'growthCheckGeneric',
     question: 'Do you grow from this experience?',
     icon: '📈',
-    options: (state) => growthOddsGeneric(state.pendingEventRarityWeight),
+    options: (state) => growthOddsGeneric(state, state.pendingEventRarityWeight),
     next: growthCheckNext,
   },
 

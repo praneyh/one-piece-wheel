@@ -51,6 +51,7 @@ export default function StatsPanel({ character, open, onClose }: Props) {
         <Section title="Identity" icon="🧭">
           <Row label="Affiliation" value={character.affiliation} />
           <Row label="Race" value={character.race} />
+          {character.bloodline && <Row label="Bloodline" value={character.bloodline} />}
           <Row label="Rank" value={character.rank} />
         </Section>
 

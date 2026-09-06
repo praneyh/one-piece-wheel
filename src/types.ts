@@ -122,6 +122,9 @@ export type EventLogEntry = { question: string; answer: string }
 
 export type CharacterState = {
   affiliation?: Affiliation
+  /** A rare (~7%) special lineage that grants a permanent, distinct mechanical edge — see
+   * BLOODLINES in gameData.ts for what each one does. */
+  bloodline?: string
   race?: string
   /** For a Hybrid character: the two underlying races whose stat mods both apply. Absent for
    * a single-race character (whose mods come from looking up `race` directly). */

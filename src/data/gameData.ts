@@ -54,6 +54,174 @@ export const RACES: RaceDef[] = [
   { label: 'Celestial Dragon', weight: 1, color: '#fef08a', mods: { power: 1, speed: 1, durability: 1, endurance: 1 }, blurb: 'World Nobles — untouchable status, modest natural gifts. (+1 tier to everything)' },
 ]
 
+// ---------------------------------------------------------------------------
+// bloodlines — rare (~7%), each one grants a distinct permanent mechanical edge rather than a
+// generic stat boost, so picking one feels like a different kind of advantage, not just "more".
+// ---------------------------------------------------------------------------
+
+export type BloodlineDef = {
+  label: string
+  weight: number
+  color: string
+  blurb: string
+  /** Starting stat-tier shift, stacked on top of race mods via the same guaranteed-floor
+   * mechanism used for race (see raceAdjustedStatTierOptions). */
+  statMods?: Partial<Record<StatKey, number>>
+  /** Guaranteed minimum Haki level(s) — the starting Haki wheel drops any option that would
+   * fall short of this floor. */
+  hakiFloor?: Partial<Record<HakiType, HakiLevel>>
+  /** Starting Fighting Style Mastery is bumped this many tiers once rolled. */
+  masteryStartBump?: number
+  /** One fighting style becomes far likelier to be rolled. */
+  fightingStyleBoost?: string
+  /** Added to the "Yes" weight when rolling for a starting Devil Fruit. */
+  devilFruitChanceBonus?: number
+  /** Flat bonus applied to every post-fight/post-event growth roll for the rest of the run. */
+  growthOddsBonus?: number
+  /** Flat bonus applied to Road Poneglyph search odds. */
+  poneglyphOddsBonus?: number
+  /** Flat bonus applied to rank/bounty-increase rolls. */
+  rankOddsBonus?: number
+  /** Multiplies the "World Event" option's weight on every hub wheel. */
+  worldEventWeightMultiplier?: number
+  /** Nudges the starting-crew size/strength wheels toward their higher end; also applies to
+   * every later crew-strength roll for a new recruit. */
+  crewSizeBias?: number
+  crewStrengthBias?: number
+}
+
+export const BLOODLINES: BloodlineDef[] = [
+  {
+    label: 'Monkey D. Family',
+    weight: 3,
+    color: '#dc2626',
+    blurb:
+      'The Will of D. — trouble and destiny find you no matter where you sail. (+1 Power tier; World Events much more frequent)',
+    statMods: { power: 1 },
+    worldEventWeightMultiplier: 3,
+  },
+  {
+    label: "Gol D. Roger's Bloodline",
+    weight: 1,
+    color: '#facc15',
+    blurb: "The Pirate King's own blood. (Guaranteed Conqueror's Haki; grow faster from every experience)",
+    hakiFloor: { "Conqueror's": 'Basic' },
+    growthOddsBonus: 6,
+  },
+  {
+    label: 'Kozuki Family',
+    weight: 3,
+    color: '#be123c',
+    blurb: 'Wano samurai royalty, hunted for twenty years. (Guaranteed Armament Haki; starts one mastery tier higher)',
+    hakiFloor: { Armament: 'Basic' },
+    masteryStartBump: 1,
+  },
+  {
+    label: 'Vinsmoke Family (Germa 66)',
+    weight: 2,
+    color: '#1d4ed8',
+    blurb: 'Genetically engineered super-soldier physiology. (+1 Power tier, +1 Durability tier)',
+    statMods: { power: 1, durability: 1 },
+  },
+  {
+    label: 'Charlotte Family',
+    weight: 3,
+    color: '#db2777',
+    blurb: "Big Mom's sprawling brood — command comes naturally. (Your crew runs larger and stronger)",
+    crewSizeBias: 2,
+    crewStrengthBias: 1,
+  },
+  {
+    label: 'Nico Family',
+    weight: 3,
+    color: '#0f766e',
+    blurb: 'Ohara scholars, keepers of the true history. (Much better odds of finding Road Poneglyphs)',
+    poneglyphOddsBonus: 4,
+  },
+  {
+    label: 'Donquixote Family',
+    weight: 2,
+    color: '#c026d3',
+    blurb: 'Fallen royalty with deep ties to the Devil Fruit underworld. (Much likelier to start with a Devil Fruit)',
+    devilFruitChanceBonus: 3,
+  },
+  {
+    label: 'Shimotsuki Family',
+    weight: 2,
+    color: '#334155',
+    blurb: 'Descended from a legendary swordsman line. (Swordsmanship far more likely; starts one mastery tier higher)',
+    fightingStyleBoost: 'Swordsmanship',
+    masteryStartBump: 1,
+  },
+  {
+    label: 'Kuja Tribe',
+    weight: 3,
+    color: '#f472b6',
+    blurb: "Amazon Lily's warrior women — raised on combat since birth. (+2 Speed tiers)",
+    statMods: { speed: 2 },
+  },
+  {
+    label: "Fisher Tiger's Legacy",
+    weight: 3,
+    color: '#0369a1',
+    blurb: "Carries the heroic will of the Sun Pirates' founder. (+1 Durability tier, +1 Endurance tier)",
+    statMods: { durability: 1, endurance: 1 },
+  },
+  {
+    label: "Rocks D. Xebec's Bloodline",
+    weight: 1,
+    color: '#450a0a',
+    blurb: 'Blood tied to the single most monstrous generation the seas ever produced. (Grow far faster from every experience)',
+    growthOddsBonus: 10,
+  },
+  {
+    label: 'Nefertari Family',
+    weight: 3,
+    color: '#eab308',
+    blurb: 'Alabastan royalty, trusted by common people and world leaders alike. (Much better odds of rising in rank)',
+    rankOddsBonus: 5,
+  },
+]
+
+export function bloodlineDef(state: CharacterState): BloodlineDef | undefined {
+  return state.bloodline ? BLOODLINES.find((b) => b.label === state.bloodline) : undefined
+}
+
+/** A fixed, deliberately not-stat-dependent ~7% chance of carrying a special bloodline. */
+export function bloodlineCheckOdds(): WheelOption[] {
+  return [opt('Yes', 7, '#facc15'), opt('No', 93, '#374151')]
+}
+
+export function bloodlineOptions(): WheelOption[] {
+  return BLOODLINES.map((b) => opt(b.label, b.weight, b.color, b.blurb))
+}
+
+const HAKI_LEVEL_RANK: Record<HakiLevel, number> = { None: 0, Basic: 1, Advanced: 2 }
+
+/** Whether a Haki preset (e.g. one wedge of the starting Haki wheel) meets a bloodline's
+ * guaranteed minimum for every Haki type it specifies. */
+export function meetsHakiFloor(
+  preset: Partial<Record<HakiType, HakiLevel>>,
+  floor: Partial<Record<HakiType, HakiLevel>>,
+): boolean {
+  return (Object.keys(floor) as HakiType[]).every(
+    (t) => HAKI_LEVEL_RANK[preset[t] ?? 'None'] >= HAKI_LEVEL_RANK[floor[t] as HakiLevel],
+  )
+}
+
+/** Shifts a weighted ordinal ladder's distribution toward higher indices by `bias` steps —
+ * used for the crew size/strength bloodline bonuses. Position i takes on the weight that used
+ * to belong to position i-bias, sliding the whole shape toward the higher end without changing
+ * its overall silhouette. */
+function biasLadderOptions(options: WheelOption[], bias: number): WheelOption[] {
+  if (bias === 0) return options
+  const n = options.length
+  return options.map((o, i) => {
+    const sourceIdx = Math.min(n - 1, Math.max(0, i - bias))
+    return { ...o, weight: options[sourceIdx].weight }
+  })
+}
+
 export const STAT_OPTIONS: WheelOption[] = [
   opt('Power', 1, '#dc2626'),
   opt('Speed', 1, '#0ea5e9'),
@@ -80,6 +248,10 @@ function raceModFor(state: CharacterState, key: StatKey): number {
   }, 0)
 }
 
+function bloodlineModFor(state: CharacterState, key: StatKey): number {
+  return bloodlineDef(state)?.statMods?.[key] ?? 0
+}
+
 /**
  * The starting-stat wheel for `key`, with every wedge's label already shifted by the
  * player's race mod — so the wheel can only ever land on the true final tier, and a positive
@@ -90,7 +262,7 @@ function raceModFor(state: CharacterState, key: StatKey): number {
  * their weights rather than showing as duplicate slices.
  */
 export function raceAdjustedStatTierOptions(state: CharacterState, key: StatKey): WheelOption[] {
-  const mod = raceModFor(state, key)
+  const mod = raceModFor(state, key) + bloodlineModFor(state, key)
   if (mod === 0) return STAT_TIER_OPTIONS[key]
   const merged = new Map<string, WheelOption>()
   for (const wedge of STAT_TIER_OPTIONS[key]) {
@@ -379,7 +551,8 @@ export function growableCount(state: CharacterState): number {
  * teaches you anything; a fight against someone far stronger than you is where growth happens. */
 export function growthOdds(state: CharacterState, opponentName: string): WheelOption[] {
   const difficulty = -combatEdge(state, opponentName) // positive = the fight was hard for me
-  const yesWeight = Math.min(95, Math.max(2, Math.round(35 + difficulty * 1.5)))
+  const bonus = bloodlineDef(state)?.growthOddsBonus ?? 0
+  const yesWeight = Math.min(95, Math.max(2, Math.round(35 + difficulty * 1.5 + bonus)))
   const noWeight = 100 - yesWeight
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#dc2626')]
 }
@@ -388,8 +561,9 @@ export function growthOdds(state: CharacterState, opponentName: string): WheelOp
  * reputation) — scaled by how rare the triggering event was. `rarityWeight` is that event's
  * own weight on the hub wheel it came from: a smaller weight (rarer to land on) means a bigger
  * payoff when it does happen, since rare experiences should feel more rewarding than routine ones. */
-export function growthOddsGeneric(rarityWeight = 5): WheelOption[] {
-  const yesWeight = Math.min(90, Math.max(15, Math.round(85 - rarityWeight * 8)))
+export function growthOddsGeneric(state: CharacterState, rarityWeight = 5): WheelOption[] {
+  const bonus = bloodlineDef(state)?.growthOddsBonus ?? 0
+  const yesWeight = Math.min(95, Math.max(15, Math.round(85 - rarityWeight * 8 + bonus)))
   const noWeight = 100 - yesWeight
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#dc2626')]
 }
@@ -430,7 +604,8 @@ export function immortalizeOption(hubSpinCount: number): WheelOption | null {
 /** Weighted Yes/No odds for a post-fight rank/bounty bump, favoring wins against relatively stronger foes. */
 export function rankIncreaseOdds(state: CharacterState, opponentName: string): WheelOption[] {
   const difficulty = -combatEdge(state, opponentName) // positive = the fight was hard for me
-  const yesWeight = Math.min(95, Math.max(2, Math.round(25 + difficulty * 1.75)))
+  const bonus = bloodlineDef(state)?.rankOddsBonus ?? 0
+  const yesWeight = Math.min(95, Math.max(2, Math.round(25 + difficulty * 1.75 + bonus)))
   const noWeight = 100 - yesWeight
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#374151')]
 }
@@ -473,6 +648,15 @@ const MASTERY_COLORS = MASTERY_LEVELS.map((o) => o.color)
 /** Wheel of every fighting-style mastery level above the player's current one. */
 export function higherMasteryOptions(current: string): WheelOption[] {
   return higherLadderOptions(MASTERY_LEVEL_ORDER, current, MASTERY_COLORS)
+}
+
+/** Shifts a mastery level by `amount` tiers, clamped to the ladder's ends — used for a
+ * bloodline's starting-mastery bump. */
+export function bumpMasteryLevel(current: string, amount: number): string {
+  if (amount === 0) return current
+  const idx = MASTERY_LEVEL_ORDER.indexOf(current)
+  const newIdx = Math.min(MASTERY_LEVEL_ORDER.length - 1, Math.max(0, (idx === -1 ? 0 : idx) + amount))
+  return MASTERY_LEVEL_ORDER[newIdx]
 }
 
 // ---------------------------------------------------------------------------
@@ -746,8 +930,9 @@ export function rankPressureWeight(state: CharacterState, baseWeight: number): n
  * higher-tier explorer with better resources fares a little better. */
 export function poneglyphFindOdds(state: CharacterState): WheelOption[] {
   const t = tierIndex(state)
-  const yesWeight = Math.min(4, Math.max(1, 1 + Math.floor(t / 3)))
-  const noWeight = 10 - yesWeight
+  const bonus = bloodlineDef(state)?.poneglyphOddsBonus ?? 0
+  const yesWeight = Math.min(9, Math.max(1, 1 + Math.floor(t / 3) + bonus))
+  const noWeight = Math.max(1, 10 - yesWeight)
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#374151')]
 }
 
@@ -1457,6 +1642,17 @@ export const CREW_STRENGTH_OPTIONS: WheelOption[] = [
   opt('Stronger than you on average', 2, '#166534'),
   opt('Much stronger than you on average', 1, '#052e16'),
 ]
+
+/** CREW_SIZE_OPTIONS, nudged toward bigger crews by a bloodline's crewSizeBias, if any. */
+export function crewSizeOptionsFor(state: CharacterState): WheelOption[] {
+  return biasLadderOptions(CREW_SIZE_OPTIONS, bloodlineDef(state)?.crewSizeBias ?? 0)
+}
+
+/** CREW_STRENGTH_OPTIONS, nudged toward stronger crewmates by a bloodline's crewStrengthBias,
+ * if any — used both for the starting-crew roll and every later individual recruit. */
+export function crewStrengthOptionsFor(state: CharacterState): WheelOption[] {
+  return biasLadderOptions(CREW_STRENGTH_OPTIONS, bloodlineDef(state)?.crewStrengthBias ?? 0)
+}
 
 /** How much an NPC's own weight shrinks per tier of distance from the player's current
  * rank/bounty tier — lower means a steeper falloff (rarer to run into a badly-mismatched foe). */
