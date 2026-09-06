@@ -16,6 +16,7 @@ import {
   CREW_ROLES,
   DEVIL_FRUIT_DISPOSAL,
   DEVIL_FRUIT_MASTERY_LEVELS,
+  DEVIL_FRUIT_MASTERY_START_OPTIONS,
   DEVIL_FRUIT_TYPES,
   FIGHTING_STYLES,
   GENERIC_EVENT_REACTIONS,
@@ -160,7 +161,7 @@ function setLastCrewmateStrength(state: CharacterState, label: string): Characte
 function applyAftermath(state: CharacterState, label: string): CharacterState {
   const foe = state.lastOpponent ?? 'an opponent'
   const withDefeat = { ...state, defeatedOpponents: [...state.defeatedOpponents, foe] }
-  if (label === 'You end the fight permanently') {
+  if (label === 'You kill them') {
     return { ...withDefeat, deceased: new Set(withDefeat.deceased).add(foe) }
   }
   return withDefeat
@@ -183,7 +184,6 @@ function applyLossConsequence(state: CharacterState, label: string): CharacterSt
 }
 
 const HAKI_PRESET_MAP: Record<string, Partial<Record<HakiType, HakiLevel>>> = {
-  None: {},
   Armament: { Armament: 'Basic' },
   Observation: { Observation: 'Basic' },
   "Conqueror's": { "Conqueror's": 'Basic' },
@@ -197,7 +197,6 @@ const HAKI_PRESET_MAP: Record<string, Partial<Record<HakiType, HakiLevel>>> = {
 }
 
 const HAKI_OPTIONS: WheelOption[] = [
-  opt('None', 6, '#374151'),
   opt('Armament', 10, '#7f1d1d'),
   opt('Observation', 10, '#991b1b'),
   opt("Conqueror's", 4, '#b91c1c'),
@@ -341,8 +340,18 @@ export const STORY_GRAPH: StoryGraph = {
       ...state,
       devilFruit: label,
       devilFruitType: state.pendingDevilFruitType,
-      devilFruitMastery: DEVIL_FRUIT_MASTERY_LEVELS[0],
     }),
+    next: 'devilFruitStartMastery',
+  },
+
+  devilFruitStartMastery: {
+    type: 'wheel',
+    id: 'devilFruitStartMastery',
+    category: 'Devil Fruit',
+    question: 'How well do you control it?',
+    icon: '🍈',
+    options: DEVIL_FRUIT_MASTERY_START_OPTIONS,
+    onSelect: (state, label) => ({ ...state, devilFruitMastery: label }),
     next: 'fightingStyle',
   },
 
@@ -442,10 +451,22 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '🔋',
     options: (state) => raceAdjustedStatTierOptions(state, 'endurance'),
     onSelect: (state, label) => ({ ...state, stats: { ...state.stats, endurance: label } }),
-    next: 'haki',
+    // A bloodline that guarantees a Haki floor (e.g. Kozuki's Armament) skips straight to the
+    // type wheel — "no Haki at all" would contradict a guaranteed minimum.
+    next: (state) => (bloodlineDef(state)?.hakiFloor ? 'haki' : 'hakiStartCheck'),
   },
 
   // ---- haki -----------------------------------------------------------------
+  hakiStartCheck: {
+    type: 'wheel',
+    id: 'hakiStartCheck',
+    category: 'Haki',
+    question: 'Do you start with Haki?',
+    icon: '🥊',
+    options: [opt('Yes', 35, '#7f1d1d'), opt('No', 65, '#374151')],
+    next: (_state, label) => (label === 'Yes' ? 'haki' : 'initialRank'),
+  },
+
   haki: {
     type: 'wheel',
     id: 'haki',
@@ -1160,7 +1181,7 @@ export const STORY_GRAPH: StoryGraph = {
     options: [
       opt('They retreat and report back', 5, '#334155'),
       opt('You capture them', 3, '#1d4ed8'),
-      opt('You end the fight permanently', 2, '#450a0a'),
+      opt('You kill them', 2, '#450a0a'),
     ],
     onSelect: (state, label) => ({ ...applyAftermath(state, label), pendingReturnNode: hubIdFor(state) }),
     next: 'rankIncreaseCheck',
@@ -1240,7 +1261,7 @@ export const STORY_GRAPH: StoryGraph = {
     options: [
       opt('They scatter and flee', 5, '#334155'),
       opt('You capture their captain', 3, '#1d4ed8'),
-      opt('You end the fight permanently', 2, '#450a0a'),
+      opt('You kill them', 2, '#450a0a'),
     ],
     onSelect: (state, label) => ({ ...applyAftermath(state, label), pendingReturnNode: hubIdFor(state) }),
     next: 'rankIncreaseCheck',

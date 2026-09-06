@@ -9,6 +9,7 @@ import StatsPanel from './components/StatsPanel'
 
 export default function App() {
   const currentNodeId = useStoryStore((s) => s.currentNodeId)
+  const visitId = useStoryStore((s) => s.visitId)
   const character = useStoryStore((s) => s.character)
   const goTo = useStoryStore((s) => s.goTo)
   const applySelection = useStoryStore((s) => s.applySelection)
@@ -49,7 +50,7 @@ export default function App() {
 
         {node.type === 'wheel' && (
           <QuestionScreen
-            key={node.id}
+            key={`${node.id}:${visitId}`}
             node={node}
             options={resolveOptions(node, character)}
             onResolved={(label, option) => applySelection(node.id, label, option)}
@@ -58,7 +59,7 @@ export default function App() {
 
         {node.type === 'recap' && shouldShowRecap && (
           <RecapScreen
-            key={node.id}
+            key={`${node.id}:${visitId}`}
             node={node}
             character={character}
             onAdvance={() => {

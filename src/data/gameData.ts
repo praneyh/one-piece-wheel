@@ -590,7 +590,7 @@ export function growableDevilFruitSlot(state: CharacterState): 'first' | 'second
 // enough spins, growing more likely to land on the longer the run goes.
 // ---------------------------------------------------------------------------
 
-const IMMORTALIZE_MIN_SPINS = 20
+const IMMORTALIZE_MIN_SPINS = 10
 const IMMORTALIZE_GROWTH_PER_SPIN = 0.5
 
 /** Returns the Immortalize wheel option once the hub has been spun enough times, or null
@@ -803,6 +803,13 @@ const DEVIL_FRUIT_MASTERY_COLORS = ['#4c1d95', '#5b21b6', '#6d28d9', '#7c3aed', 
 export function higherDevilFruitMasteryOptions(current: string): WheelOption[] {
   return higherLadderOptions(DEVIL_FRUIT_MASTERY_LEVELS, current, DEVIL_FRUIT_MASTERY_COLORS)
 }
+
+/** Starting mastery for a Devil Fruit you begin the game with — same shape as the fighting-style
+ * mastery wheel (low tiers common, high tiers rare), since a starting character having already
+ * mastered their fruit should be the exception, not the rule. */
+export const DEVIL_FRUIT_MASTERY_START_OPTIONS: WheelOption[] = DEVIL_FRUIT_MASTERY_LEVELS.map((label, i) =>
+  opt(label, Math.max(1, Math.round(10 * Math.pow(0.6, i))), DEVIL_FRUIT_MASTERY_COLORS[i]),
+)
 
 // ---------------------------------------------------------------------------
 // rank ladders
