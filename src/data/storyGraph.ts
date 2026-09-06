@@ -14,6 +14,8 @@ import {
 } from '../types'
 import {
   CREW_ROLES,
+  CREW_SIZE_OPTIONS,
+  CREW_STRENGTH_OPTIONS,
   DEVIL_FRUIT_DISPOSAL,
   DEVIL_FRUIT_MASTERY_LEVELS,
   DEVIL_FRUIT_TYPES,
@@ -21,8 +23,6 @@ import {
   GENERIC_EVENT_REACTIONS,
   GROWTH_COUNT_OPTIONS,
   MAJOR_PIRATE_CREWS,
-  MARINE_EXTREME_ROSTER,
-  MARINE_STRONG_ROSTER,
   MASTERY_LEVEL_ORDER,
   MASTERY_LEVELS,
   PIRATE_ROSTER,
@@ -37,6 +37,7 @@ import {
   fruitListForType,
   fullRankOptions,
   growableCount,
+  growableDevilFruitSlot,
   growthOdds,
   growthOddsGeneric,
   higherDevilFruitMasteryOptions,
@@ -45,6 +46,7 @@ import {
   higherRankOptions,
   higherStatOptions,
   immortalizeOption,
+  marineRosterOptions,
   npcOptions,
   opt,
   poneglyphFindOdds,
@@ -52,9 +54,9 @@ import {
   rankIncreaseOdds,
   rankLadderFor,
   rankPressureWeight,
+  secondDevilFruitSurvivalOdds,
   survivalOdds,
   tacticBonus,
-  tierIndex,
 } from './gameData'
 
 export const START_NODE_ID = 'affiliation'
@@ -131,6 +133,13 @@ function withPoneglyph(state: CharacterState): CharacterState {
       { question: 'Road Poneglyph acquired', answer: PONEGLYPH_LABELS[found] },
     ],
   }
+}
+
+function setLastCrewmateStrength(state: CharacterState, label: string): CharacterState {
+  if (state.crew.length === 0) return state
+  const crew = [...state.crew]
+  crew[crew.length - 1] = { ...crew[crew.length - 1], strengthTier: label }
+  return { ...state, crew }
 }
 
 function applyAftermath(state: CharacterState, label: string): CharacterState {
@@ -433,7 +442,7 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '🏴‍☠️',
     options: [opt('Your own crew', 6, '#dc2626'), opt("An existing pirate's crew", 4, '#7f1d1d')],
     onSelect: (state, label) => (label === 'Your own crew' ? { ...state, crewOrigin: 'Their own crew (Captain)' } : state),
-    next: (state, label) => (label === "An existing pirate's crew" ? 'crewOriginExisting' : hubIdFor(state)),
+    next: (_state, label) => (label === "An existing pirate's crew" ? 'crewOriginExisting' : 'crewOriginOwnSize'),
   },
 
   crewOriginExisting: {
@@ -444,6 +453,29 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '🏴‍☠️',
     options: MAJOR_PIRATE_CREWS,
     onSelect: (state, label) => ({ ...state, crewOrigin: label }),
+    next: hubIdFor,
+  },
+
+  // ---- your own crew: how many, and how do they compare to you ------------
+  crewOriginOwnSize: {
+    type: 'wheel',
+    id: 'crewOriginOwnSize',
+    category: 'Crew',
+    question: 'How many crewmates do you start with?',
+    icon: '🧑‍🤝‍🧑',
+    options: CREW_SIZE_OPTIONS,
+    onSelect: (state, label) => ({ ...state, crewSize: Number(label) }),
+    next: 'crewOriginOwnStrength',
+  },
+
+  crewOriginOwnStrength: {
+    type: 'wheel',
+    id: 'crewOriginOwnStrength',
+    category: 'Crew',
+    question: 'How do they compare to you?',
+    icon: '💪',
+    options: CREW_STRENGTH_OPTIONS,
+    onSelect: (state, label) => ({ ...state, crewStrengthTier: label }),
     next: hubIdFor,
   },
 
@@ -483,21 +515,28 @@ export const STORY_GRAPH: StoryGraph = {
       ...state,
       hubSpinCount: state.hubSpinCount + 1,
       ...(label === 'Immortalize' ? { immortalized: true } : {}),
+      ...(label === 'Train' || label === 'A legendary master offers to train you'
+        ? { pendingReturnNode: undefined }
+        : {}),
     }),
-    next: (_state, label) => {
+    next: (state, label) => {
       if (label === 'Immortalize') return 'ending'
+      // How you train is flavor only: either route lands on the same real growth roll.
+      if (label === 'Train') return 'growthStronger'
+      // A legendary master's teaching always pays off — no separate flavor step needed.
+      if (label === 'A legendary master offers to train you') {
+        return growableCount(state) > 0 ? 'growthStatCount' : hubIdFor(state)
+      }
       const routes: Record<string, string> = {
         'World Event': 'worldEvent',
         'You meet other pirates on the seas': 'meetPirates',
         'You gain more crewmates': 'gainCrewmates',
         'Search for a Road Poneglyph': 'poneglyphMethod',
         'Marines come after you': 'marineEncounter',
-        Train: 'train',
         'Learn a new fighting style': 'fightingStyleLearn',
         'Find a Devil Fruit': 'devilFruitEncounter',
         'You discover ancient ruins': 'ruinsExploration',
         'A rival marks you for death': 'rivalEncounter',
-        'A legendary master offers to train you': 'legendaryMentor',
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Word of your exploits spreads': 'reputationSpread',
         'Get a new bounty': 'rankJump',
@@ -539,21 +578,28 @@ export const STORY_GRAPH: StoryGraph = {
       ...state,
       hubSpinCount: state.hubSpinCount + 1,
       ...(label === 'Immortalize' ? { immortalized: true } : {}),
+      ...(label === 'Train' || label === 'A legendary master offers to train you'
+        ? { pendingReturnNode: undefined }
+        : {}),
     }),
-    next: (_state, label) => {
+    next: (state, label) => {
       if (label === 'Immortalize') return 'ending'
+      // How you train is flavor only: either route lands on the same real growth roll.
+      if (label === 'Train') return 'growthStronger'
+      // A legendary master's teaching always pays off — no separate flavor step needed.
+      if (label === 'A legendary master offers to train you') {
+        return growableCount(state) > 0 ? 'growthStatCount' : hubIdFor(state)
+      }
       const routes: Record<string, string> = {
         'World Event': 'worldEvent',
         'Pirates attack you': 'pirateFightRoster',
         'Hunt down a pirate crew': 'pirateFightRoster',
         'Recruit new subordinates': 'gainCrewmates',
         'Investigate a Road Poneglyph lead': 'poneglyphMethod',
-        Train: 'train',
         'Learn a new fighting style': 'fightingStyleLearn',
         'Find a Devil Fruit': 'devilFruitEncounter',
         'You discover ancient ruins': 'ruinsExploration',
         'An old enemy resurfaces': 'rivalEncounter',
-        'A legendary master offers to train you': 'legendaryMentor',
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Your service is recognized': 'reputationSpread',
         'Get promoted': 'rankJump',
@@ -595,21 +641,29 @@ export const STORY_GRAPH: StoryGraph = {
       ...state,
       hubSpinCount: state.hubSpinCount + 1,
       ...(label === 'Immortalize' ? { immortalized: true } : {}),
+      ...(label === 'Train' || label === 'A legendary master offers to train you'
+        ? { pendingReturnNode: undefined }
+        : {}),
     }),
-    next: (_state, label) => {
+    next: (state, label) => {
       if (label === 'Immortalize') return 'ending'
+      // How you train is flavor only: either route lands on the same real growth roll.
+      if (label === 'Train') return 'growthStronger'
+      // A legendary master's teaching always pays off — no separate flavor step needed.
+      if (label === 'A legendary master offers to train you') {
+        return growableCount(state) > 0 ? 'growthStatCount' : hubIdFor(state)
+      }
       const routes: Record<string, string> = {
         'World Event': 'worldEvent',
-        'Liberate an island': 'liberateIsland',
+        // Freeing the island vs. retreating is flavor only — either way you're back at this hub.
+        'Liberate an island': 'hubRevolutionary',
         'Clash with the Marines': 'marineEncounter',
         'Recruit revolutionaries': 'gainCrewmates',
         'Search for a Road Poneglyph': 'poneglyphMethod',
-        Train: 'train',
         'Learn a new fighting style': 'fightingStyleLearn',
         'Find a Devil Fruit': 'devilFruitEncounter',
         'You discover ancient ruins': 'ruinsExploration',
         'A traitor from within challenges you': 'rivalEncounter',
-        'A legendary master offers to train you': 'legendaryMentor',
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Your cause gains sympathizers': 'reputationSpread',
         'Get promoted': 'rankJump',
@@ -643,20 +697,7 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'What do you do?',
     icon: '🌍',
     options: (state) => WORLD_EVENT_REACTIONS[state.lastWorldEvent ?? ''] ?? GENERIC_EVENT_REACTIONS,
-    next: (_state, label) => (RISKY_REACTIONS.has(label) ? 'worldEventDanger' : 'worldEventSafeTail'),
-  },
-
-  worldEventSafeTail: {
-    type: 'wheel',
-    id: 'worldEventSafeTail',
-    question: 'How does it play out?',
-    icon: '🌍',
-    options: [
-      opt('Word spreads of your caution', 4, '#374151'),
-      opt('You live to sail another day', 5, '#0d9488'),
-      opt('An opportunity missed, but you stay safe', 3, '#78350f'),
-    ],
-    next: hubIdFor,
+    next: (state, label) => (RISKY_REACTIONS.has(label) ? 'worldEventDanger' : hubIdFor(state)),
   },
 
   // World events flagged risky escalate into a full high-stakes encounter: a serious threat,
@@ -827,6 +868,16 @@ export const STORY_GRAPH: StoryGraph = {
       ...state,
       crew: [...state.crew, { name: state.lastMet ?? 'a new ally', role: label }],
     }),
+    next: 'assignCrewRoleStrength',
+  },
+
+  assignCrewRoleStrength: {
+    type: 'wheel',
+    id: 'assignCrewRoleStrength',
+    question: 'How do they compare to you?',
+    icon: '💪',
+    options: CREW_STRENGTH_OPTIONS,
+    onSelect: (state, label) => setLastCrewmateStrength(state, label),
     next: hubIdFor,
   },
 
@@ -839,6 +890,16 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '🧑‍🤝‍🧑',
     options: CREW_ROLES,
     onSelect: (state, label) => ({ ...state, crew: [...state.crew, { name: label, role: label }] }),
+    next: 'gainCrewmatesStrength',
+  },
+
+  gainCrewmatesStrength: {
+    type: 'wheel',
+    id: 'gainCrewmatesStrength',
+    question: 'How do they compare to you?',
+    icon: '💪',
+    options: CREW_STRENGTH_OPTIONS,
+    onSelect: (state, label) => setLastCrewmateStrength(state, label),
     next: (state) => (state.crew.length > 0 && state.crew.length % 3 === 0 ? 'crewRecap' : hubIdFor(state)),
   },
 
@@ -863,7 +924,7 @@ export const STORY_GRAPH: StoryGraph = {
       opt('Search for them', 4, '#991b1b'),
     ],
     next: (_state, label) =>
-      label === 'Steal from other Pirates' ? 'poneglyphTarget' : 'poneglyphSearch',
+      label === 'Steal from other Pirates' ? 'poneglyphTarget' : 'poneglyphSearchResult',
   },
 
   poneglyphTarget: {
@@ -941,21 +1002,6 @@ export const STORY_GRAPH: StoryGraph = {
     next: 'growthCheck',
   },
 
-  poneglyphSearch: {
-    type: 'wheel',
-    id: 'poneglyphSearch',
-    category: 'Road Poneglyph',
-    question: 'Where do you search?',
-    icon: '🗿',
-    options: [
-      opt('An ancient ruin', 4, '#78350f'),
-      opt('A sunken ship', 3, '#0369a1'),
-      opt('A hidden library', 2, '#4338ca'),
-      opt('A Skypiean vault', 2, '#64748b'),
-    ],
-    next: 'poneglyphSearchResult',
-  },
-
   poneglyphSearchResult: {
     type: 'wheel',
     id: 'poneglyphSearchResult',
@@ -992,39 +1038,15 @@ export const STORY_GRAPH: StoryGraph = {
   },
 
   // ---- marines -----------------------------------------------------------
+  // Which Marine you draw is decided entirely by your current rank/bounty (marineTierForRank) —
+  // no separate difficulty spin; a maxed-out bounty only ever pulls from the strongest roster.
   marineEncounter: {
     type: 'wheel',
     id: 'marineEncounter',
     category: 'Marines',
-    question: 'Marines come after you',
-    icon: '⚓',
-    options: (state) => {
-      const t = tierIndex(state)
-      const extremeWeight = Math.max(1, t)
-      const strongWeight = Math.max(1, 9 - t)
-      return [opt('Strong', strongWeight, '#334155'), opt('Extreme', extremeWeight, '#7f1d1d')]
-    },
-    next: (_state, label) => (label === 'Strong' ? 'marineStrong' : 'marineExtreme'),
-  },
-
-  marineStrong: {
-    type: 'wheel',
-    id: 'marineStrong',
-    category: 'Marines',
     question: 'Which Marine?',
     icon: '⚓',
-    options: (state) => npcOptions(MARINE_STRONG_ROSTER, state),
-    onSelect: (state, label) => ({ ...state, lastOpponent: label }),
-    next: 'marineTactic',
-  },
-
-  marineExtreme: {
-    type: 'wheel',
-    id: 'marineExtreme',
-    category: 'Marines',
-    question: 'Which Marine?',
-    icon: '⚓',
-    options: (state) => npcOptions(MARINE_EXTREME_ROSTER, state),
+    options: (state) => marineRosterOptions(state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'marineTactic',
   },
@@ -1219,20 +1241,6 @@ export const STORY_GRAPH: StoryGraph = {
     next: growthCheckNext,
   },
 
-  // ---- revolutionary flavor ------------------------------------------------
-  liberateIsland: {
-    type: 'wheel',
-    id: 'liberateIsland',
-    category: 'Revolutionary',
-    question: 'What happens?',
-    icon: '🌋',
-    options: [
-      opt('You free the island!', 6, '#166534', 'The people rise up alongside you.'),
-      opt('The Marines reinforce and you retreat', 3, '#334155'),
-    ],
-    next: hubIdFor,
-  },
-
   // ---- fresh hub encounters: exploration, rivals, mentors, gear, downtime -----
   ruinsExploration: {
     type: 'wheel',
@@ -1290,20 +1298,6 @@ export const STORY_GRAPH: StoryGraph = {
     next: 'marineTactic',
   },
 
-  legendaryMentor: {
-    type: 'wheel',
-    id: 'legendaryMentor',
-    category: 'Training',
-    question: 'A legendary master takes you under their wing.',
-    icon: '🧙',
-    options: [
-      opt('You train under their harsh discipline', 5, '#dc2626'),
-      opt('You learn their secret technique', 5, '#facc15'),
-    ],
-    onSelect: (state) => ({ ...state, pendingReturnNode: undefined }),
-    next: (state) => (growableCount(state) > 0 ? 'growthStatCount' : hubIdFor(state)),
-  },
-
   weaponReforge: {
     type: 'wheel',
     id: 'weaponReforge',
@@ -1338,23 +1332,6 @@ export const STORY_GRAPH: StoryGraph = {
   },
 
   // ---- training / growth --------------------------------------------------
-  train: {
-    type: 'wheel',
-    id: 'train',
-    category: 'Training',
-    question: 'How do you train?',
-    icon: '🏋️',
-    options: [
-      opt('Alone in the wild', 4, '#b45309'),
-      opt('Under a legendary master', 2, '#facc15'),
-      opt('With your crew', 4, '#0d9488'),
-      opt('In a Marine prison (rumored method)', 1, '#374151'),
-    ],
-    // Clears out any stale return-node from an earlier fight sequence.
-    onSelect: (state) => ({ ...state, pendingReturnNode: undefined }),
-    next: 'growthStronger',
-  },
-
   growthStronger: {
     type: 'wheel',
     id: 'growthStronger',
@@ -1401,11 +1378,13 @@ export const STORY_GRAPH: StoryGraph = {
         MASTERY_LEVEL_ORDER.indexOf(state.fightingMastery ?? '') < MASTERY_LEVEL_ORDER.length - 1
           ? [opt('Fighting Style Mastery', 3, '#94a3b8')]
           : []
+      const dfMaxIdx = DEVIL_FRUIT_MASTERY_LEVELS.length - 1
+      const dfIdx1 = DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+      const dfIdx2 = state.secondDevilFruit
+        ? DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.secondDevilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+        : dfMaxIdx
       const dfMasteryOpts =
-        state.devilFruit &&
-        !picked.has('Devil Fruit Mastery') &&
-        DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0]) <
-          DEVIL_FRUIT_MASTERY_LEVELS.length - 1
+        state.devilFruit && !picked.has('Devil Fruit Mastery') && (dfIdx1 < dfMaxIdx || dfIdx2 < dfMaxIdx)
           ? [opt('Devil Fruit Mastery', 2, '#7c3aed')]
           : []
       const combined = [...statOpts, ...hakiOpts, ...masteryOpts, ...dfMasteryOpts]
@@ -1482,12 +1461,22 @@ export const STORY_GRAPH: StoryGraph = {
     id: 'growthDevilFruitMasteryTarget',
     question: 'What level do you reach?',
     icon: '🍈',
-    options: (state) => higherDevilFruitMasteryOptions(state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0]),
-    onSelect: (state, label) => ({
-      ...state,
-      devilFruitMastery: label,
-      pendingStatRolls: state.pendingStatRolls - 1,
-    }),
+    options: (state) => {
+      const slot = growableDevilFruitSlot(state)
+      const current =
+        slot === 'second'
+          ? (state.secondDevilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+          : (state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+      return higherDevilFruitMasteryOptions(current)
+    },
+    onSelect: (state, label) => {
+      const slot = growableDevilFruitSlot(state)
+      return {
+        ...state,
+        ...(slot === 'second' ? { secondDevilFruitMastery: label } : { devilFruitMastery: label }),
+        pendingStatRolls: state.pendingStatRolls - 1,
+      }
+    },
     next: growthLoopNext,
   },
 
@@ -1564,22 +1553,48 @@ export const STORY_GRAPH: StoryGraph = {
     onSelect: (state, label) => {
       if (label === 'Eat it') {
         if (state.devilFruit) {
-          return {
-            ...state,
-            causeOfDeath: `You already carried the power of the ${state.devilFruit}. Eating the ${state.pendingFoundFruit} on top of it tore your body apart from the inside.`,
-          }
+          // Already carrying one fruit's power — whether a second one is survivable at all is
+          // decided by the wheel next, not here.
+          return { ...state, pendingSecondFruit: true }
         }
         return {
           ...state,
           devilFruit: state.pendingFoundFruit,
           devilFruitType: state.pendingDevilFruitType,
           devilFruitMastery: DEVIL_FRUIT_MASTERY_LEVELS[0],
+          pendingSecondFruit: false,
         }
       }
       if (label === 'Feed it to a weapon') {
-        return { ...state, weaponHasDevilFruit: true }
+        return { ...state, weaponHasDevilFruit: true, pendingSecondFruit: false }
       }
-      return state
+      return { ...state, pendingSecondFruit: false }
+    },
+    next: (state, label) => (label === 'Eat it' && state.pendingSecondFruit ? 'secondDevilFruitSurvival' : hubIdFor(state)),
+  },
+
+  secondDevilFruitSurvival: {
+    type: 'wheel',
+    id: 'secondDevilFruitSurvival',
+    category: 'Devil Fruit',
+    question: 'Can your body handle two Devil Fruits?',
+    icon: '☠️',
+    options: secondDevilFruitSurvivalOdds,
+    onSelect: (state, label) => {
+      if (label === 'Survive') {
+        return {
+          ...state,
+          secondDevilFruit: state.pendingFoundFruit,
+          secondDevilFruitType: state.pendingDevilFruitType,
+          secondDevilFruitMastery: DEVIL_FRUIT_MASTERY_LEVELS[0],
+          pendingSecondFruit: false,
+        }
+      }
+      return {
+        ...state,
+        pendingSecondFruit: false,
+        causeOfDeath: `You already carried the power of the ${state.devilFruit}. Eating the ${state.pendingFoundFruit} on top of it tore your body apart from the inside — one in a million bodies could have withstood it, and yours wasn't one of them.`,
+      }
     },
     next: hubIdFor,
   },

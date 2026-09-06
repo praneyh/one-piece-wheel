@@ -110,7 +110,13 @@ export const HAKI_TYPES: HakiType[] = ['Armament', 'Observation', "Conqueror's"]
 
 export type DevilFruitType = 'Paramecia' | 'Zoan' | 'Logia' | 'Ancient Zoan' | 'Mythical Zoan'
 
-export type CrewMember = { name: string; role: string }
+export type CrewMember = {
+  name: string
+  role: string
+  /** How this crewmate's strength compares to yours — same wording as the starting-crew
+   * strength wheel, spun individually for each new recruit. */
+  strengthTier?: string
+}
 
 export type EventLogEntry = { question: string; answer: string }
 
@@ -135,6 +141,11 @@ export type CharacterState = {
   crew: CrewMember[]
   /** Pirate-only: whose crew you started with, if any (your own, or a canon crew's name). */
   crewOrigin?: string
+  /** Only set when crewOrigin is your own crew: how many crewmates you started with (1-10). */
+  crewSize?: number
+  /** Only set when crewOrigin is your own crew: how your crewmates' average strength compares
+   * to your own, from "Much weaker than you" to "Much stronger than you". */
+  crewStrengthTier?: string
   deceased: Set<string>
   defeatedOpponents: string[]
   lastOpponent?: string
@@ -144,8 +155,17 @@ export type CharacterState = {
   devilFruit?: string
   devilFruitType?: DevilFruitType
   devilFruitMastery?: string
+  /** Set only on the rare survivor of eating a second Devil Fruit — its power stacks with the
+   * first rather than replacing it. */
+  secondDevilFruit?: string
+  secondDevilFruitType?: DevilFruitType
+  secondDevilFruitMastery?: string
   pendingDevilFruitType?: DevilFruitType
   pendingFoundFruit?: string
+  /** True only while resolving the "eat a second Devil Fruit" survival wheel — distinguishes an
+   * already-fruited character eating another from a first-time bite, since onSelect sets
+   * devilFruit for both by the time `next` inspects the post-onSelect state. */
+  pendingSecondFruit?: boolean
   pendingStatRolls: number
   pendingStatName?: StatKey
   pendingHakiName?: HakiType

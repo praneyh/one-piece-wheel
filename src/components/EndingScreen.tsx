@@ -96,8 +96,16 @@ export default function EndingScreen({ character, onRestart }: Props) {
         <Row label="Weapon" value={character.weapon} />
         <Row label="Devil Fruit" value={character.devilFruit ?? 'None'} />
         {character.devilFruit && <Row label="Devil Fruit Mastery" value={character.devilFruitMastery} />}
+        {character.secondDevilFruit && <Row label="Second Devil Fruit" value={character.secondDevilFruit} />}
+        {character.secondDevilFruit && (
+          <Row label="Second Fruit Mastery" value={character.secondDevilFruitMastery} />
+        )}
         {character.crewOrigin && <Row label="Started With" value={character.crewOrigin} />}
-        <Row label="Crew Size" value={String(character.crew.length)} />
+        {character.crewSize !== undefined && (
+          <Row label="Starting Crew Size" value={String(character.crewSize)} />
+        )}
+        {character.crewStrengthTier && <Row label="Crew Strength" value={character.crewStrengthTier} />}
+        <Row label="Recruited Since" value={String(character.crew.length)} />
         <Row label="Road Poneglyphs" value={poneglyphs.join(', ') || 'None'} />
         <Row label="Defeated Opponents" value={String(character.defeatedOpponents.length)} />
       </div>

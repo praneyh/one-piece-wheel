@@ -82,15 +82,26 @@ export default function StatsPanel({ character, open, onClose }: Props) {
           <Row label="Fruit" value={character.devilFruit ?? 'None'} />
           {character.devilFruit && <Row label="Type" value={character.devilFruitType} />}
           {character.devilFruit && <Row label="Mastery" value={character.devilFruitMastery} />}
+          {character.secondDevilFruit && <Row label="Second Fruit" value={character.secondDevilFruit} />}
+          {character.secondDevilFruit && <Row label="Second Type" value={character.secondDevilFruitType} />}
+          {character.secondDevilFruit && <Row label="Second Mastery" value={character.secondDevilFruitMastery} />}
           {character.weaponHasDevilFruit && <Row label="Weapon" value="Devil Fruit infused" />}
         </Section>
 
         <Section title="Crew" icon="🧑‍🤝‍🧑">
           {character.crewOrigin && <Row label="Started With" value={character.crewOrigin} />}
-          <Row label="Size" value={String(character.crew.length)} />
-          {character.crew.length > 0 && (
-            <Row label="Members" value={character.crew.map((c) => c.name).join(', ')} />
+          {character.crewSize !== undefined && (
+            <Row label="Starting Crew Size" value={String(character.crewSize)} />
           )}
+          {character.crewStrengthTier && <Row label="Crew Strength" value={character.crewStrengthTier} />}
+          <Row label="Recruited Since" value={String(character.crew.length)} />
+          {character.crew.map((c, i) => (
+            <Row
+              key={`${c.name}-${i}`}
+              label={c.name}
+              value={c.strengthTier ? `${c.role} · ${c.strengthTier}` : c.role}
+            />
+          ))}
         </Section>
 
         <Section title="Progress" icon="🏆">

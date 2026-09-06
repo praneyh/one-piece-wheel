@@ -147,6 +147,9 @@ export type StrengthProfile = {
   fightingMastery: string
   /** Omit (or leave undefined) for a character with no Devil Fruit. */
   devilFruitMastery?: string
+  /** Only set for the rare survivor of a second Devil Fruit — its power stacks on top of the
+   * first rather than replacing it. */
+  secondDevilFruitMastery?: string
 }
 
 /**
@@ -168,9 +171,17 @@ export function overallStrengthFromProfile(profile: StrengthProfile): number {
   const masteryIdx = Math.max(0, MASTERY_LEVEL_ORDER.indexOf(profile.fightingMastery))
   const masteryScore = masteryIdx / (MASTERY_LEVEL_ORDER.length - 1)
 
+  // A second Devil Fruit's mastery stacks on top of the first (capped at the same 1.0 ceiling as
+  // a single maxed-out fruit) rather than averaging the two down — surviving the fluke is
+  // supposed to make you stronger, not dilute what you already had.
+  const dfIdx1 = profile.devilFruitMastery
+    ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.devilFruitMastery))
+    : 0
+  const dfIdx2 = profile.secondDevilFruitMastery
+    ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.secondDevilFruitMastery))
+    : 0
   const dfScore = profile.devilFruitMastery
-    ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.devilFruitMastery)) /
-      (DEVIL_FRUIT_MASTERY_LEVELS.length - 1)
+    ? Math.min(1, (dfIdx1 + dfIdx2) / (DEVIL_FRUIT_MASTERY_LEVELS.length - 1))
     : 0
 
   const combined = statScore * 0.45 + hakiScore * 0.25 + masteryScore * 0.15 + dfScore * 0.15
@@ -184,6 +195,9 @@ export function playerOverallStrength(state: CharacterState): number {
     haki: state.haki,
     fightingMastery: state.fightingMastery ?? MASTERY_LEVEL_ORDER[0],
     devilFruitMastery: state.devilFruit ? (state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0]) : undefined,
+    secondDevilFruitMastery: state.secondDevilFruit
+      ? (state.secondDevilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+      : undefined,
   })
 }
 
@@ -221,6 +235,14 @@ const FALLBACK_COMBAT_PROFILE: CombatProfile = {
 
 function combatProfileFrom(profile: StrengthProfile): CombatProfile {
   const hakiOrder: HakiLevel[] = ['None', 'Basic', 'Advanced']
+  const dfIdx1 = profile.devilFruitMastery
+    ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.devilFruitMastery))
+    : 0
+  // A second surviving Devil Fruit adds its own mastery on top in the fight math too — two
+  // fruits' worth of power, not one diluted by the other.
+  const dfIdx2 = profile.secondDevilFruitMastery
+    ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.secondDevilFruitMastery))
+    : 0
   return {
     power: statTierIndex('power', profile.stats.power),
     speed: statTierIndex('speed', profile.stats.speed),
@@ -228,9 +250,7 @@ function combatProfileFrom(profile: StrengthProfile): CombatProfile {
     endurance: statTierIndex('endurance', profile.stats.endurance),
     hakiSum: HAKI_TYPES.reduce((sum, t) => sum + hakiOrder.indexOf(profile.haki[t]), 0),
     masteryIdx: Math.max(0, MASTERY_LEVEL_ORDER.indexOf(profile.fightingMastery)),
-    dfMasteryIdx: profile.devilFruitMastery
-      ? Math.max(0, DEVIL_FRUIT_MASTERY_LEVELS.indexOf(profile.devilFruitMastery))
-      : 0,
+    dfMasteryIdx: dfIdx1 + dfIdx2,
   }
 }
 
@@ -240,6 +260,9 @@ function playerCombatProfile(state: CharacterState): CombatProfile {
     haki: state.haki,
     fightingMastery: state.fightingMastery ?? MASTERY_LEVEL_ORDER[0],
     devilFruitMastery: state.devilFruit ? (state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0]) : undefined,
+    secondDevilFruitMastery: state.secondDevilFruit
+      ? (state.secondDevilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+      : undefined,
   })
 }
 
@@ -342,12 +365,12 @@ export function growableCount(state: CharacterState): number {
   }).length
   const hakiCount = HAKI_TYPES.filter((t) => state.haki[t] !== 'Advanced').length
   const masteryCount = MASTERY_LEVEL_ORDER.indexOf(state.fightingMastery ?? '') < MASTERY_LEVEL_ORDER.length - 1 ? 1 : 0
-  const dfMasteryCount =
-    state.devilFruit &&
-    DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0]) <
-      DEVIL_FRUIT_MASTERY_LEVELS.length - 1
-      ? 1
-      : 0
+  const dfMaxIdx = DEVIL_FRUIT_MASTERY_LEVELS.length - 1
+  const dfIdx1 = DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+  const dfIdx2 = state.secondDevilFruit
+    ? DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.secondDevilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+    : dfMaxIdx
+  const dfMasteryCount = state.devilFruit && (dfIdx1 < dfMaxIdx || dfIdx2 < dfMaxIdx) ? 1 : 0
   return statCount + hakiCount + masteryCount + dfMasteryCount
 }
 
@@ -369,6 +392,23 @@ export function growthOddsGeneric(rarityWeight = 5): WheelOption[] {
   const yesWeight = Math.min(90, Math.max(15, Math.round(85 - rarityWeight * 8)))
   const noWeight = 100 - yesWeight
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#dc2626')]
+}
+
+/** Eating a second Devil Fruit is fatal in canon without exception — surviving it at all is a
+ * fluke the story has never actually shown, so the odds stay a tiny fixed sliver regardless of
+ * the character's own stats. */
+export function secondDevilFruitSurvivalOdds(): WheelOption[] {
+  return [opt('Survive', 2, '#16a34a'), opt('Die', 98, '#7f1d1d')]
+}
+
+/** Which Devil Fruit a "Devil Fruit Mastery" growth pick should target: for a two-fruit
+ * survivor, whichever of the two currently lags behind, so both fruits' power keeps growing
+ * instead of the second one sitting untrained forever. */
+export function growableDevilFruitSlot(state: CharacterState): 'first' | 'second' {
+  if (!state.secondDevilFruit) return 'first'
+  const idx1 = DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+  const idx2 = DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.secondDevilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
+  return idx2 < idx1 ? 'second' : 'first'
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +712,19 @@ export function tierIndex(state: CharacterState): number {
 }
 
 /**
+ * Which of the 5 Marine strength categories (1 = weakest, 5 = strongest) the player's current
+ * rank/bounty position falls into, as a hard partition of their affiliation's ladder into equal
+ * fifths — e.g. only the very top bounty bracket lands in category 5, guaranteeing a maxed-out
+ * bounty only ever draws the strongest Marines rather than mixing in weaker ones.
+ */
+export function marineTierForRank(state: CharacterState): 1 | 2 | 3 | 4 | 5 {
+  const ladder = rankLadderFor(state)
+  const idx = ladder.indexOf(state.rank)
+  const frac = idx === -1 ? 0 : idx / Math.max(1, ladder.length - 1)
+  return (Math.min(4, Math.floor(frac * 5)) + 1) as 1 | 2 | 3 | 4 | 5
+}
+
+/**
  * How much weight the "Get a new bounty"/"Get promoted" hub option should carry, given how the
  * player's raw stat-based overall strength compares to where they currently sit on the rank
  * ladder. Mapping playerOverallStrength (1-100) onto the same ladder gives an "expected" rank
@@ -763,43 +816,82 @@ function profile(
   }
 }
 
-export const MARINE_STRONG_ROSTER: NpcDef[] = [
-  // Post-timeskip/Wano Coby trained under Garp, made Rear Admiral track, and — notably —
-  // awakened Conqueror's Haki (one of only a handful of named characters confirmed to have it).
-  {
-    name: 'Coby',
-    minTier: 2,
-    profile: profile(2, 2, 2, 3, { Observation: 'Basic', "Conqueror's": 'Basic' }, 2),
-    weight: 4,
-    color: '#f9a8d4',
-    lethality: 0,
-  },
+// Marines are grouped into 5 fixed strength categories (weakest to strongest) rather than
+// picked from a spin-for-difficulty wheel — marineTierForRank() above maps the player's current
+// rank/bounty straight onto one of these 5 rosters, so a maxed-out bounty only ever draws from
+// MARINE_TIER_5. minTier is unused for this selection (kept only because NpcDef requires it).
+
+export const MARINE_TIER_1: NpcDef[] = [
   { name: 'Helmeppo', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#fca5a5', lethality: 0 },
   { name: 'Fullbody', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#93c5fd', lethality: 0 },
-  {
-    name: 'Smoker',
-    minTier: 1,
-    profile: profile(3, 4, 3, 5, { Armament: 'Basic', Observation: 'Basic' }, 3, 4),
-    weight: 4,
-    color: '#94a3b8',
-    lethality: 1,
-  },
+  { name: 'Jango', minTier: 0, profile: profile(0, 1, 1, 1, {}, 1), weight: 3, color: '#bef264', lethality: 0 },
+  { name: 'Nezumi', minTier: 0, profile: profile(0, 1, 1, 1, {}, 1), weight: 3, color: '#fda4af', lethality: 0 },
+  { name: 'T-Bone', minTier: 1, profile: profile(1, 1, 1, 2, {}, 1), weight: 2, color: '#7c2d12', lethality: 1 },
+  { name: 'Doberman', minTier: 1, profile: profile(1, 1, 1, 2, {}, 2), weight: 2, color: '#78716c', lethality: 1 },
+]
+
+export const MARINE_TIER_2: NpcDef[] = [
   { name: 'Tashigi', minTier: 1, profile: profile(1, 2, 1, 2, {}, 2), weight: 3, color: '#38bdf8', lethality: 0 },
-  { name: 'Hina', minTier: 2, profile: profile(2, 3, 2, 3, {}, 2, 2), weight: 3, color: '#f472b6', lethality: 0 },
   {
-    name: 'X-Drake',
-    minTier: 2,
-    profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3, 3),
-    weight: 2,
-    color: '#4d7c0f',
-    lethality: 1,
+    name: 'Ain',
+    minTier: 1,
+    profile: profile(2, 2, 2, 2, { Observation: 'Basic' }, 2),
+    weight: 3,
+    color: '#22d3ee',
+    lethality: 0,
   },
+  { name: 'Hina', minTier: 2, profile: profile(2, 3, 2, 3, {}, 2, 2), weight: 3, color: '#f472b6', lethality: 0 },
   {
     name: 'Momonga',
     minTier: 2,
     profile: profile(3, 2, 3, 3, { Armament: 'Basic' }, 3),
     weight: 2,
     color: '#a3a3a3',
+    lethality: 1,
+  },
+  {
+    name: 'Bastille',
+    minTier: 2,
+    profile: profile(2, 2, 3, 3, { Armament: 'Basic' }, 2),
+    weight: 2,
+    color: '#65a30d',
+    lethality: 1,
+  },
+  {
+    name: 'Hannyabal',
+    minTier: 2,
+    profile: profile(2, 2, 3, 3, {}, 2),
+    weight: 2,
+    color: '#d97706',
+    lethality: 1,
+  },
+]
+
+export const MARINE_TIER_3: NpcDef[] = [
+  // Post-timeskip/Wano Coby trained under Garp, made Rear Admiral track, and — notably —
+  // awakened Conqueror's Haki (one of only a handful of named characters confirmed to have it).
+  {
+    name: 'Coby',
+    minTier: 2,
+    profile: profile(2, 2, 2, 3, { Observation: 'Basic', "Conqueror's": 'Basic' }, 2),
+    weight: 3,
+    color: '#f9a8d4',
+    lethality: 0,
+  },
+  {
+    name: 'Smoker',
+    minTier: 3,
+    profile: profile(3, 4, 3, 5, { Armament: 'Basic', Observation: 'Basic' }, 3, 4),
+    weight: 3,
+    color: '#94a3b8',
+    lethality: 1,
+  },
+  {
+    name: 'X-Drake',
+    minTier: 3,
+    profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3, 3),
+    weight: 2,
+    color: '#4d7c0f',
     lethality: 1,
   },
   {
@@ -810,40 +902,32 @@ export const MARINE_STRONG_ROSTER: NpcDef[] = [
     color: '#1f2937',
     lethality: 2,
   },
-  { name: 'T-Bone', minTier: 3, profile: profile(1, 1, 1, 2, {}, 1), weight: 2, color: '#7c2d12', lethality: 1 },
-]
-
-export const MARINE_EXTREME_ROSTER: NpcDef[] = [
   {
-    name: 'Garp',
-    minTier: 3,
-    profile: profile(9, 6, 9, 7, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
-    weight: 4,
-    color: '#78716c',
-    lethality: 0,
+    // A Vice Admiral present at Marineford with an unusual glass-and-mirror devil fruit.
+    name: 'Doll',
+    minTier: 4,
+    profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3, 2),
+    weight: 2,
+    color: '#c4b5fd',
+    lethality: 1,
   },
   {
+    name: 'Strawberry',
+    minTier: 4,
+    profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3),
+    weight: 2,
+    color: '#fb7185',
+    lethality: 1,
+  },
+]
+
+export const MARINE_TIER_4: NpcDef[] = [
+  {
     name: 'Sentomaru',
-    minTier: 3,
+    minTier: 4,
     profile: profile(5, 3, 5, 4, { Armament: 'Basic' }, 3),
     weight: 3,
     color: '#57534e',
-    lethality: 1,
-  },
-  {
-    name: 'Kuzan',
-    minTier: 4,
-    profile: profile(8, 7, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
-    weight: 3,
-    color: '#2563eb',
-    lethality: 1,
-  },
-  {
-    name: 'Issho',
-    minTier: 4,
-    profile: profile(8, 6, 8, 7, { Armament: 'Basic', Observation: 'Advanced' }, 5, 5),
-    weight: 3,
-    color: '#a855f7',
     lethality: 1,
   },
   {
@@ -855,13 +939,12 @@ export const MARINE_EXTREME_ROSTER: NpcDef[] = [
     lethality: 1,
   },
   {
-    // Kizaru's own namesake/gimmick is genuinely "attacks travel at the speed of light" — the
-    // one canon character who fits the very top rung left open for NPCs.
-    name: 'Borsalino',
+    // Impel Down's Chief Warden — poison powers feared even by top-tier pirates.
+    name: 'Magellan',
     minTier: 5,
-    profile: profile(8, 10, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    profile: profile(6, 4, 7, 6, { Armament: 'Advanced' }, 4, 4),
     weight: 2,
-    color: '#facc15',
+    color: '#581c87',
     lethality: 2,
   },
   {
@@ -873,24 +956,78 @@ export const MARINE_EXTREME_ROSTER: NpcDef[] = [
     lethality: 1,
   },
   {
-    // Akainu sits at the very ceiling of what's canonically shown — alongside Kaido, Big Mom,
-    // Blackbeard, and Shanks — as the single most feared/destructive individual combatants.
-    name: 'Sakazuki',
-    minTier: 6,
-    profile: profile(9, 8, 9, 8, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
-    weight: 2,
-    color: '#991b1b',
-    lethality: 3,
-  },
-  {
     name: 'Kong',
-    minTier: 7,
+    minTier: 5,
     profile: profile(7, 6, 8, 7, { Armament: 'Advanced', Observation: 'Basic' }, 5),
     weight: 1,
     color: '#3f3f46',
     lethality: 2,
   },
 ]
+
+export const MARINE_TIER_5: NpcDef[] = [
+  {
+    name: 'Garp',
+    minTier: 6,
+    profile: profile(9, 6, 9, 7, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
+    weight: 4,
+    color: '#78716c',
+    lethality: 0,
+  },
+  {
+    name: 'Kuzan',
+    minTier: 6,
+    profile: profile(8, 7, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 3,
+    color: '#2563eb',
+    lethality: 1,
+  },
+  {
+    name: 'Issho',
+    minTier: 6,
+    profile: profile(8, 6, 8, 7, { Armament: 'Basic', Observation: 'Advanced' }, 5, 5),
+    weight: 3,
+    color: '#a855f7',
+    lethality: 1,
+  },
+  {
+    // Kizaru's own namesake/gimmick is genuinely "attacks travel at the speed of light" — the
+    // one canon character who fits the very top rung left open for NPCs.
+    name: 'Borsalino',
+    minTier: 7,
+    profile: profile(8, 10, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 2,
+    color: '#facc15',
+    lethality: 2,
+  },
+  {
+    // Akainu sits at the very ceiling of what's canonically shown — alongside Kaido, Big Mom,
+    // Blackbeard, and Shanks — as the single most feared/destructive individual combatants.
+    name: 'Sakazuki',
+    minTier: 7,
+    profile: profile(9, 8, 9, 8, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
+    weight: 2,
+    color: '#991b1b',
+    lethality: 3,
+  },
+]
+
+export const MARINE_ROSTERS: Record<1 | 2 | 3 | 4 | 5, NpcDef[]> = {
+  1: MARINE_TIER_1,
+  2: MARINE_TIER_2,
+  3: MARINE_TIER_3,
+  4: MARINE_TIER_4,
+  5: MARINE_TIER_5,
+}
+
+/** Builds wheel options straight from the Marine roster matching the player's current
+ * rank/bounty tier — no separate difficulty spin, and dead Marines are excluded. */
+export function marineRosterOptions(state: CharacterState): WheelOption[] {
+  const pool = MARINE_ROSTERS[marineTierForRank(state)]
+  const alive = pool.filter((n) => !state.deceased.has(n.name))
+  const candidates = alive.length > 0 ? alive : pool
+  return candidates.map((n) => opt(n.name, n.weight, n.color))
+}
 
 export const PIRATE_ROSTER: NpcDef[] = [
   { name: "Alvida's Gang", minTier: 0, profile: profile(0, 0, 0, 0, {}, 0), weight: 4, color: '#7f1d1d', lethality: 1 },
@@ -1291,6 +1428,36 @@ export const MAJOR_PIRATE_CREWS: WheelOption[] = [
   opt('Rocks Pirates', 1, '#111827'),
 ]
 
+// ---------------------------------------------------------------------------
+// starting crew size & strength (own-crew Pirate origin only)
+// ---------------------------------------------------------------------------
+
+/** Crew size 1-10, gently favoring a mid-sized crew over a lone wolf or a full ten-person one. */
+export const CREW_SIZE_OPTIONS: WheelOption[] = [
+  opt('1', 3, '#134e4a'),
+  opt('2', 4, '#115e59'),
+  opt('3', 5, '#0f766e'),
+  opt('4', 6, '#0d9488'),
+  opt('5', 6, '#14b8a6'),
+  opt('6', 5, '#2dd4bf'),
+  opt('7', 4, '#5eead4'),
+  opt('8', 3, '#99f6e4'),
+  opt('9', 2, '#ccfbf1'),
+  opt('10', 2, '#f0fdfa'),
+]
+
+/** How your crew's average strength compares to your own — peaks one notch below "Equal" since
+ * a captain is typically the strongest one aboard, with both extremes deliberately rare. */
+export const CREW_STRENGTH_OPTIONS: WheelOption[] = [
+  opt('Much weaker than you on average', 1, '#7f1d1d'),
+  opt('Weaker than you on average', 5, '#b91c1c'),
+  opt('Slightly weaker than you on average', 12, '#dc2626'),
+  opt('Equal in strength to you on average', 7, '#a16207'),
+  opt('Slightly stronger than you on average', 4, '#15803d'),
+  opt('Stronger than you on average', 2, '#166534'),
+  opt('Much stronger than you on average', 1, '#052e16'),
+]
+
 /** How much an NPC's own weight shrinks per tier of distance from the player's current
  * rank/bounty tier — lower means a steeper falloff (rarer to run into a badly-mismatched foe). */
 const ENCOUNTER_TIER_DECAY = 0.45
@@ -1317,8 +1484,11 @@ export function npcOptions(pool: NpcDef[], state: CharacterState): WheelOption[]
 }
 
 const ALL_NPCS: NpcDef[] = [
-  ...MARINE_STRONG_ROSTER,
-  ...MARINE_EXTREME_ROSTER,
+  ...MARINE_TIER_1,
+  ...MARINE_TIER_2,
+  ...MARINE_TIER_3,
+  ...MARINE_TIER_4,
+  ...MARINE_TIER_5,
   ...PIRATE_ROSTER,
   ...WORLD_EVENT_THREATS,
   ...RIVAL_ROSTER,
