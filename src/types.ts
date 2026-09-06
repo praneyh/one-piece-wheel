@@ -150,6 +150,9 @@ export type CharacterState = {
    * to your own, from "Much weaker than you" to "Much stronger than you". */
   crewStrengthTier?: string
   deceased: Set<string>
+  /** Named NPCs successfully recruited into your crew — excluded from future opponent pools
+   * alongside the deceased, since you can't fight someone who already sails with you. */
+  recruited: Set<string>
   defeatedOpponents: string[]
   lastOpponent?: string
   lastMet?: string
@@ -201,6 +204,7 @@ export function createInitialState(): CharacterState {
     poneglyphsCollected: new Set(),
     crew: [],
     deceased: new Set(),
+    recruited: new Set(),
     defeatedOpponents: [],
     additionalStyles: [],
     pendingStatRolls: 0,

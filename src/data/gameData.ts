@@ -9,6 +9,7 @@ import {
   statTierIndex,
   type Affiliation,
   type CharacterState,
+  type CrewMember,
   type HakiLevel,
   type HakiState,
   type HakiType,
@@ -450,11 +451,84 @@ const FIGHT_EDGE_SCALE = 8
 const EDGE_SPEED_WEIGHT = 0.5
 const EDGE_ENDURANCE_WEIGHT = 0.3
 
+/** Each successive tier is worth more than the last — a gap between two top-end tiers (Planet
+ * Level vs Star Level) swings a fight far more decisively than the same 1-tier gap near the
+ * bottom of the ladder (Wall Level vs Building Level), matching how a canon power gap of that
+ * size would actually play out rather than treating every tier step as equally significant. */
+const TIER_EXP_BASE = 1.35
+function expTier(idx: number): number {
+  return Math.pow(TIER_EXP_BASE, idx)
+}
+
+/** A single crewmate/backup's edge contribution caps out here (a fully maxed-out ally is worth
+ * this much, scaled down for weaker ones) — several strong crewmates can add up to a lot, but
+ * no one ally alone decides a fight. */
+const CREW_MEMBER_MAX_EDGE = 2
+/** Being part of a whole established crew is worth more than any single crewmate, but is still
+ * bounded so it can't single-handedly guarantee a win. */
+const EXISTING_CREW_MAX_EDGE = 6
+/** Hard ceiling on the combined crew-edge contribution from either side, so an extreme
+ * combination of a big crew, a strong starting crew, and an established crew of origin can't
+ * blow up into an unbounded number. */
+const MAX_CREW_EDGE = 25
+/** Flat edge bonus an opponent gets for being a captain/leader known to have their own crew or
+ * subordinates backing them up in a fight. */
+const OPPONENT_CREW_EDGE_BONUS = 3
+
+/** How a descriptive crew-strength tier (see CREW_STRENGTH_OPTIONS) translates into a multiple
+ * of the player's own overall strength, for a crewmate whose exact stats aren't tracked. */
+const CREW_STRENGTH_TIER_MULTIPLIER: Record<string, number> = {
+  'Much weaker than you on average': 0.35,
+  'Weaker than you on average': 0.6,
+  'Slightly weaker than you on average': 0.8,
+  'Equal in strength to you on average': 1.0,
+  'Slightly stronger than you on average': 1.2,
+  'Stronger than you on average': 1.45,
+  'Much stronger than you on average': 1.75,
+}
+
+/** A crewmate's own 1-100 overall-strength estimate: an exact lookup for a recruited named NPC
+ * (their real profile is already known), or a rough estimate relative to the player's own
+ * current strength for a generic, flavor-only recruit. */
+function crewMemberStrengthScore(state: CharacterState, member: CrewMember): number {
+  if (ALL_NPCS.some((n) => n.name === member.name)) return npcStrength(member.name)
+  const mult = CREW_STRENGTH_TIER_MULTIPLIER[member.strengthTier ?? ''] ?? 0.8
+  return Math.min(100, playerOverallStrength(state) * mult)
+}
+
+/** The player's total combat-edge bonus from every source of backup: individually recruited
+ * crewmates, an own starting crew (size + average strength), and an existing established crew
+ * you began the run as part of. */
+function myCrewEdgeBonus(state: CharacterState): number {
+  let total = 0
+  for (const member of state.crew) {
+    total += (crewMemberStrengthScore(state, member) / 100) * CREW_MEMBER_MAX_EDGE
+  }
+  if (state.crewOrigin === 'Their own crew (Captain)' && state.crewSize) {
+    const mult = CREW_STRENGTH_TIER_MULTIPLIER[state.crewStrengthTier ?? ''] ?? 0.8
+    const avgStrength = Math.min(100, playerOverallStrength(state) * mult)
+    total += (avgStrength / 100) * CREW_MEMBER_MAX_EDGE * state.crewSize
+  }
+  if (state.crewOrigin && EXISTING_CREW_STRENGTH[state.crewOrigin] !== undefined) {
+    total += (EXISTING_CREW_STRENGTH[state.crewOrigin] / 100) * EXISTING_CREW_MAX_EDGE
+  }
+  return Math.min(MAX_CREW_EDGE, total)
+}
+
+/** The opponent's own crew/backup bonus — a flat amount for a known captain/leader, since
+ * individual subordinates aren't tracked the way the player's crew is. */
+function opponentCrewEdgeBonus(opponentName: string): number {
+  const npc = ALL_NPCS.find((n) => n.name === opponentName)
+  return npc?.hasCrew ? Math.min(MAX_CREW_EDGE, OPPONENT_CREW_EDGE_BONUS) : 0
+}
+
 /**
  * A signed "how lopsided is this matchup" score: positive favors the player, negative favors
- * the opponent. Built from raw tier-index gaps (not normalized 0-1), so a genuinely huge gap on
- * any one axis — especially the offense-vs-defense exchange — dominates the result the way it
- * would in the actual story, instead of being diluted by averaging in less-relevant stats.
+ * the opponent. Built from exponentially-scaled tier gaps (see expTier) rather than raw index
+ * differences, so a genuinely huge gap on any one axis — especially the offense-vs-defense
+ * exchange, and especially near the top of a ladder — dominates the result the way it would in
+ * the actual story, instead of being diluted by averaging in less-relevant stats or treated the
+ * same as an equivalent gap near the bottom of the ladder.
  */
 export function combatEdge(state: CharacterState, opponentName: string): number {
   const me = playerCombatProfile(state)
@@ -463,17 +537,18 @@ export function combatEdge(state: CharacterState, opponentName: string): number 
   // Can I hurt them? (my power vs their durability) minus can they hurt me? (their power vs
   // my durability) — this is what actually determines who's in danger in a fight, not a
   // power-vs-power or durability-vs-durability comparison in isolation.
-  const myOffense = me.power - opp.durability
-  const theirOffense = opp.power - me.durability
+  const myOffense = expTier(me.power) - expTier(opp.durability)
+  const theirOffense = expTier(opp.power) - expTier(me.durability)
   const physicalEdge = myOffense - theirOffense
 
-  const speedEdge = (me.speed - opp.speed) * EDGE_SPEED_WEIGHT
-  const enduranceEdge = (me.endurance - opp.endurance) * EDGE_ENDURANCE_WEIGHT
+  const speedEdge = (expTier(me.speed) - expTier(opp.speed)) * EDGE_SPEED_WEIGHT
+  const enduranceEdge = (expTier(me.endurance) - expTier(opp.endurance)) * EDGE_ENDURANCE_WEIGHT
   const hakiEdge = me.hakiSum - opp.hakiSum
   const masteryEdge = me.masteryIdx - opp.masteryIdx
   const dfEdge = me.dfMasteryIdx - opp.dfMasteryIdx
+  const crewEdge = myCrewEdgeBonus(state) - opponentCrewEdgeBonus(opponentName)
 
-  return physicalEdge + speedEdge + enduranceEdge + hakiEdge + masteryEdge + dfEdge
+  return physicalEdge + speedEdge + enduranceEdge + hakiEdge + masteryEdge + dfEdge + crewEdge
 }
 
 /** Maps a signed edge score to a 1-99 weight via a logistic curve — steep enough that a
@@ -780,12 +855,19 @@ export function fruitListForType(type: string): WheelOption[] {
   }
 }
 
-export const DEVIL_FRUIT_DISPOSAL: WheelOption[] = [
+const DEVIL_FRUIT_DISPOSAL_BASE: WheelOption[] = [
   opt('Eat it', 6, '#7c3aed'),
   opt('Throw it away', 2, '#374151'),
   opt('Sell it', 3, '#0d9488'),
   opt('Feed it to a weapon', 1, '#b45309'),
 ]
+
+/** Eating a second Devil Fruit is (almost always) fatal, so if you already have one, "Eat it"
+ * becomes a small sliver of the wheel instead of the default favorite. */
+export function devilFruitDisposalOptions(state: CharacterState): WheelOption[] {
+  if (!state.devilFruit) return DEVIL_FRUIT_DISPOSAL_BASE
+  return DEVIL_FRUIT_DISPOSAL_BASE.map((o) => (o.label === 'Eat it' ? { ...o, weight: 1 } : o))
+}
 
 // Mastery over a Devil Fruit's power — grows like any other stat, topping out at Awakened.
 export const DEVIL_FRUIT_MASTERY_LEVELS = [
@@ -959,6 +1041,10 @@ export type NpcDef = {
   color: string
   /** 0 = wouldn't kill you, 3 = will end your story without hesitation. */
   lethality: number
+  /** True for a captain/leader known to command their own crew or subordinates in a fight —
+   * grants a flat combat edge bonus against the player. Left unset for lone individuals and for
+   * roster entries that already represent a whole crew/group as a single stat block. */
+  hasCrew?: boolean
 }
 
 /**
@@ -1214,23 +1300,21 @@ export const MARINE_ROSTERS: Record<1 | 2 | 3 | 4 | 5, NpcDef[]> = {
 
 /** Builds wheel options straight from the Marine roster matching the player's current
  * rank/bounty tier — no separate difficulty spin, and dead Marines are excluded. */
+/** An NPC is off the table once they're dead, and once they're recruited into your own crew —
+ * you can't fight someone who already sails with you. */
+function isAvailable(state: CharacterState, name: string): boolean {
+  return !state.deceased.has(name) && !state.recruited.has(name)
+}
+
 export function marineRosterOptions(state: CharacterState): WheelOption[] {
   const pool = MARINE_ROSTERS[marineTierForRank(state)]
-  const alive = pool.filter((n) => !state.deceased.has(n.name))
+  const alive = pool.filter((n) => isAvailable(state, n.name))
   const candidates = alive.length > 0 ? alive : pool
   return candidates.map((n) => opt(n.name, n.weight, n.color))
 }
 
 export const PIRATE_ROSTER: NpcDef[] = [
   { name: "Alvida's Gang", minTier: 0, profile: profile(0, 0, 0, 0, {}, 0), weight: 4, color: '#7f1d1d', lethality: 1 },
-  {
-    name: "Buggy's Crew",
-    minTier: 0,
-    profile: profile(1, 1, 1, 1, {}, 1, 1),
-    weight: 4,
-    color: '#dc2626',
-    lethality: 1,
-  },
   {
     name: 'A drunken island bandit crew',
     minTier: 0,
@@ -1312,6 +1396,17 @@ export const PIRATE_ROSTER: NpcDef[] = [
     lethality: 3,
   },
   {
+    // Buggy's the figurehead, but the muscle is Mihawk (world's strongest swordsman, former
+    // Warlord) and Crocodile (former Warlord) — a bounty-hunting organization punching well
+    // above what its nominal leader could manage alone.
+    name: 'The Cross Guild',
+    minTier: 5,
+    profile: profile(8, 6, 7, 6, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
+    weight: 1,
+    color: '#ca8a04',
+    lethality: 2,
+  },
+  {
     // Sweet/All-Star Commanders sit just below the true Yonko-tier ceiling below.
     name: 'A Big Mom Pirates Commander',
     minTier: 5,
@@ -1359,6 +1454,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     weight: 3,
     color: '#7f1d1d',
     lethality: 1,
+    hasCrew: true,
   },
   {
     name: 'The raging storm itself',
@@ -1399,6 +1495,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     weight: 2,
     color: '#7c2d12',
     lethality: 3,
+    hasCrew: true,
   },
   {
     // Commander of the Knights of God, second in authority only to Garling himself — Garling
@@ -1514,7 +1611,15 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
 export const RIVAL_ROSTER: NpcDef[] = [
   { name: 'Duval', minTier: 0, profile: profile(1, 1, 1, 2, {}, 1), weight: 3, color: '#b45309', lethality: 0 },
   { name: 'Mr. 9', minTier: 0, profile: profile(0, 0, 0, 1, {}, 0), weight: 2, color: '#78716c', lethality: 1 },
-  { name: 'Arlong', minTier: 1, profile: profile(3, 2, 3, 3, {}, 2), weight: 3, color: '#0891b2', lethality: 2 },
+  {
+    name: 'Arlong',
+    minTier: 1,
+    profile: profile(3, 2, 3, 3, {}, 2),
+    weight: 3,
+    color: '#0891b2',
+    lethality: 2,
+    hasCrew: true,
+  },
   {
     name: 'Bellamy',
     minTier: 1,
@@ -1522,6 +1627,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 2,
     color: '#f97316',
     lethality: 1,
+    hasCrew: true,
   },
   {
     name: 'Caesar Clown',
@@ -1538,6 +1644,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 2,
     color: '#1e293b',
     lethality: 2,
+    hasCrew: true,
   },
   {
     name: 'Crocodile',
@@ -1546,6 +1653,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 2,
     color: '#eab308',
     lethality: 2,
+    hasCrew: true,
   },
   {
     name: 'Gecko Moria',
@@ -1554,6 +1662,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 2,
     color: '#581c87',
     lethality: 2,
+    hasCrew: true,
   },
   {
     // A former Warlord, extremely dangerous, but a notch below the true Yonko-tier ceiling.
@@ -1563,6 +1672,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 2,
     color: '#ec4899',
     lethality: 3,
+    hasCrew: true,
   },
   {
     // Two Devil Fruits, Yonko-tier — sits at the very ceiling alongside Kaido/Big Mom/Akainu.
@@ -1572,6 +1682,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 1,
     color: '#450a0a',
     lethality: 3,
+    hasCrew: true,
   },
   {
     // Widely regarded as top-tier even one-armed — no Devil Fruit, so his score leans entirely
@@ -1582,6 +1693,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 1,
     color: '#dc2626',
     lethality: 2,
+    hasCrew: true,
   },
   {
     // A dangerous, god-revered Giant antagonist encountered in Elbaf — elite tier, a notch
@@ -1592,6 +1704,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     weight: 2,
     color: '#4338ca',
     lethality: 3,
+    hasCrew: true,
   },
 ]
 
@@ -1619,6 +1732,39 @@ export const MAJOR_PIRATE_CREWS: WheelOption[] = [
   opt('Golden Lion Pirates', 1, '#a16207'),
   opt('Rocks Pirates', 1, '#111827'),
 ]
+
+/** A rough 1-100 collective-strength rating for each existing crew you can start as part of —
+ * used to give "you're part of an established crew" a real combat edge, scaled the same way an
+ * NPC's own overallStrength would be. */
+// A 100 on this scale would require every axis simultaneously maxed out — Universal Level
+// power/durability, Infinite Speed, Absolute endurance, all Haki Advanced, Grandmaster mastery,
+// Awakened Devil Fruit mastery. No individual character in this game (not even the strongest
+// NPCs on the roster) reaches that, since NPC_POWER_DURABILITY_MAX_IDX/NPC_SPEED_MAX_IDX/
+// NPC_ENDURANCE_MAX_IDX cap every NPC's stats below the ladders' true top tiers — the highest
+// any NPC could ever reach if every one of their axes sat at that cap simultaneously is ~90 (see
+// overallStrengthFromProfile). A whole crew, no matter how legendary, is still made of characters
+// bound by that same ceiling, so nothing here gets close to 100 either — Rocks Pirates, the
+// single strongest crew in the setting's history, tops out just under that ~90 ceiling.
+const EXISTING_CREW_STRENGTH: Record<string, number> = {
+  'Alvida Pirates': 8,
+  'On Air Pirates': 12,
+  'Foxy Pirates': 14,
+  'Buggy Pirates': 18,
+  'Krieg Pirates': 22,
+  'Baroque Works': 30,
+  'Sun Pirates': 38,
+  'Golden Lion Pirates': 45,
+  'Heart Pirates': 48,
+  'Kid Pirates': 50,
+  'Straw Hat Pirates': 60,
+  'Red Hair Pirates': 74,
+  'Blackbeard Pirates': 78,
+  'Beast Pirates': 79,
+  'Whitebeard Pirates': 80,
+  'Big Mom Pirates': 81,
+  'Roger Pirates': 85,
+  'Rocks Pirates': 88,
+}
 
 // ---------------------------------------------------------------------------
 // starting crew size & strength (own-crew Pirate origin only)
@@ -1676,7 +1822,7 @@ const ENCOUNTER_TIER_DECAY = 0.45
  */
 export function npcOptions(pool: NpcDef[], state: CharacterState): WheelOption[] {
   const playerTier = tierIndex(state)
-  const alive = pool.filter((n) => !state.deceased.has(n.name))
+  const alive = pool.filter((n) => isAvailable(state, n.name))
   const candidates = alive.length > 0 ? alive : pool
   return candidates.map((n) => {
     const distance = Math.abs(n.minTier - playerTier)

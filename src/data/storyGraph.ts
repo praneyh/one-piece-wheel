@@ -14,7 +14,6 @@ import {
 } from '../types'
 import {
   CREW_ROLES,
-  DEVIL_FRUIT_DISPOSAL,
   DEVIL_FRUIT_MASTERY_LEVELS,
   DEVIL_FRUIT_MASTERY_START_OPTIONS,
   DEVIL_FRUIT_TYPES,
@@ -38,6 +37,7 @@ import {
   bumpMasteryLevel,
   crewSizeOptionsFor,
   crewStrengthOptionsFor,
+  devilFruitDisposalOptions,
   fightOddsOptions,
   fruitListForType,
   fullRankOptions,
@@ -733,8 +733,7 @@ export const STORY_GRAPH: StoryGraph = {
       }
       const routes: Record<string, string> = {
         'World Event': 'worldEvent',
-        // Freeing the island vs. retreating is flavor only — either way you're back at this hub.
-        'Liberate an island': 'hubRevolutionary',
+        'Liberate an island': 'liberateIsland',
         'Clash with the Marines': 'marineEncounter',
         'Recruit revolutionaries': 'gainCrewmates',
         'Search for a Road Poneglyph': 'poneglyphMethod',
@@ -909,7 +908,18 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'Do they accept?',
     icon: '🤝',
     options: [opt('Yes', 6, '#16a34a'), opt('No', 4, '#dc2626')],
-    next: (_state, label) => (label === 'Yes' ? 'assignCrewRole' : 'meetPiratesRecruitFail'),
+    // An existing character's specialty and strength are already established (their NpcDef
+    // profile) — no need to spin for either, unlike a brand-new, unnamed recruit.
+    onSelect: (state, label) => {
+      if (label !== 'Yes') return state
+      const name = state.lastMet ?? 'a new ally'
+      return {
+        ...state,
+        crew: [...state.crew, { name, role: 'Crewmate' }],
+        recruited: new Set(state.recruited).add(name),
+      }
+    },
+    next: (state, label) => (label === 'Yes' ? hubIdFor(state) : 'meetPiratesRecruitFail'),
   },
 
   meetPiratesRecruitFail: {
@@ -934,29 +944,6 @@ export const STORY_GRAPH: StoryGraph = {
       opt('They spot you and give chase!', 3, '#7f1d1d'),
     ],
     next: (state, label) => (label === 'They spot you and give chase!' ? 'pirateFightTactic' : hubIdFor(state)),
-  },
-
-  assignCrewRole: {
-    type: 'wheel',
-    id: 'assignCrewRole',
-    question: "What's their specialty?",
-    icon: '🧑‍🤝‍🧑',
-    options: CREW_ROLES,
-    onSelect: (state, label) => ({
-      ...state,
-      crew: [...state.crew, { name: state.lastMet ?? 'a new ally', role: label }],
-    }),
-    next: 'assignCrewRoleStrength',
-  },
-
-  assignCrewRoleStrength: {
-    type: 'wheel',
-    id: 'assignCrewRoleStrength',
-    question: 'How do they compare to you?',
-    icon: '💪',
-    options: crewStrengthOptionsFor,
-    onSelect: (state, label) => setLastCrewmateStrength(state, label),
-    next: hubIdFor,
   },
 
   // ---- gaining crewmates --------------------------------------------------
@@ -1124,6 +1111,19 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Marines',
     question: 'Which Marine?',
     icon: '⚓',
+    options: (state) => marineRosterOptions(state),
+    onSelect: (state, label) => ({ ...state, lastOpponent: label }),
+    next: 'marineTactic',
+  },
+
+  // Liberating an island means fighting whoever the Marines have garrisoned there — same
+  // roster/tactic/outcome chain as a direct Marine clash, just reached through a different door.
+  liberateIsland: {
+    type: 'wheel',
+    id: 'liberateIsland',
+    category: 'Revolutionary',
+    question: 'Who holds the island?',
+    icon: '🌋',
     options: (state) => marineRosterOptions(state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'marineTactic',
@@ -1627,7 +1627,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Devil Fruit',
     question: 'What do you do with it?',
     icon: '🍈',
-    options: DEVIL_FRUIT_DISPOSAL,
+    options: devilFruitDisposalOptions,
     onSelect: (state, label) => {
       if (label === 'Eat it') {
         if (state.devilFruit) {
