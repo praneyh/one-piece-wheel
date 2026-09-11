@@ -52,10 +52,13 @@ import {
   higherStatOptions,
   immortalizeOption,
   marineRosterOptions,
+  masteryGrowable,
   meetsHakiFloor,
   npcOptions,
   opt,
   poneglyphFindOdds,
+  poneglyphLocationModifier,
+  PONEGLYPH_SEARCH_LOCATIONS,
   raceAdjustedStatTierOptions,
   rankIncreaseOdds,
   rankLadderFor,
@@ -80,15 +83,34 @@ function isAtMaxRank(state: CharacterState): boolean {
   return ladder.indexOf(state.rank) >= ladder.length - 1
 }
 
-function allHakiMaxed(state: CharacterState): boolean {
-  return HAKI_TYPES.every((t) => state.haki[t] === 'Advanced')
+/** Which fighting style a landed "Fighting Style Mastery" growth pick targets — whatever
+ * growthMasteryStylePick set, or the primary style by default when there was nothing to choose
+ * between (a single-style character skips that picker node entirely). */
+function masteryTargetStyle(state: CharacterState): string {
+  return state.pendingMasteryStyle ?? state.fightingStyle ?? 'your style'
 }
 
-/** Shared "continue the growth batch, celebrate maxed Haki, or return" routing for both
- * growthStatTarget and growthHakiTarget. */
+/** Current mastery level for a named known style — the primary style's own field, or the
+ * matching entry in additionalStyles. */
+function currentMasteryForStyle(state: CharacterState, styleName: string): string {
+  if (styleName === state.fightingStyle) return state.fightingMastery ?? MASTERY_LEVEL_ORDER[0]
+  return state.additionalStyles.find((s) => s.style === styleName)?.mastery ?? MASTERY_LEVEL_ORDER[0]
+}
+
+/** Writes a new mastery level back to whichever style it belongs to — the primary
+ * `fightingMastery` field, or the matching entry inside `additionalStyles`. */
+function applyMasteryForStyle(state: CharacterState, styleName: string, newLevel: string): CharacterState {
+  if (styleName === state.fightingStyle) return { ...state, fightingMastery: newLevel }
+  return {
+    ...state,
+    additionalStyles: state.additionalStyles.map((s) => (s.style === styleName ? { ...s, mastery: newLevel } : s)),
+  }
+}
+
+/** Shared "continue the growth batch, or return" routing for growthStatTarget, growthHakiTarget,
+ * growthMasteryTarget, and growthDevilFruitMasteryTarget. */
 function growthLoopNext(state: CharacterState): string {
   if (state.pendingStatRolls > 0) return 'growthStatPick'
-  if (allHakiMaxed(state)) return 'hakiRecapGrowth'
   return state.pendingReturnNode ?? hubIdFor(state)
 }
 
@@ -208,17 +230,6 @@ const HAKI_OPTIONS: WheelOption[] = [
   opt("Advance Conqueror's & Observation", 2, '#450a0a'),
   opt('All 3 Advanced', 1, '#fde047'),
 ]
-
-function hakiRecapNode(id: string, next: string | ((state: CharacterState) => string)) {
-  return {
-    type: 'recap' as const,
-    id,
-    title: () => 'Haki Mastery!',
-    body: () => 'You now have all 3 Haki types on the advanced level.',
-    accent: 'pink' as const,
-    next,
-  }
-}
 
 // ---------------------------------------------------------------------------
 // story graph
@@ -480,11 +491,8 @@ export const STORY_GRAPH: StoryGraph = {
       return eligible.length > 0 ? eligible : HAKI_OPTIONS
     },
     onSelect: (state, label) => ({ ...state, haki: { ...state.haki, ...HAKI_PRESET_MAP[label] } }),
-    next: (_state, label) => (label === 'All 3 Advanced' ? 'hakiRecapIntro' : 'initialRank'),
+    next: 'initialRank',
   },
-
-  hakiRecapIntro: hakiRecapNode('hakiRecapIntro', 'initialRank'),
-  hakiRecapGrowth: hakiRecapNode('hakiRecapGrowth', (state) => state.pendingReturnNode ?? hubIdFor(state)),
 
   // ---- starting rank ----------------------------------------------------
   initialRank: {
@@ -565,7 +573,7 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '🧭',
     options: (state) => {
       const options = [
-        opt('World Event', 1, '#374151'),
+        opt('World Event', 3, '#374151'),
         opt('You meet other pirates on the seas', 9, '#dc2626'),
         opt('You gain more crewmates', 5, '#7f1d1d'),
         opt('Search for a Road Poneglyph', 6, '#be185d'),
@@ -629,7 +637,7 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '🧭',
     options: (state) => {
       const options = [
-        opt('World Event', 1, '#374151'),
+        opt('World Event', 3, '#374151'),
         opt('Pirates attack you', 8, '#dc2626'),
         opt('Hunt down a pirate crew', 6, '#7f1d1d'),
         opt('Recruit new subordinates', 5, '#1d4ed8'),
@@ -693,7 +701,7 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '🧭',
     options: (state) => {
       const options = [
-        opt('World Event', 1, '#374151'),
+        opt('World Event', 3, '#374151'),
         opt('Liberate an island', 5, '#166534'),
         opt('Clash with the Marines', 8, '#2563eb'),
         opt('Recruit revolutionaries', 5, '#1d4ed8'),
@@ -965,15 +973,6 @@ export const STORY_GRAPH: StoryGraph = {
     icon: '💪',
     options: crewStrengthOptionsFor,
     onSelect: (state, label) => setLastCrewmateStrength(state, label),
-    next: (state) => (state.crew.length > 0 && state.crew.length % 3 === 0 ? 'crewRecap' : hubIdFor(state)),
-  },
-
-  crewRecap: {
-    type: 'recap',
-    id: 'crewRecap',
-    title: (state) => `A Crew of ${state.crew.length}!`,
-    body: (state) => `Your ranks now include: ${state.crew.map((c) => c.name).join(', ')}.`,
-    accent: 'green',
     next: hubIdFor,
   },
 
@@ -989,7 +988,7 @@ export const STORY_GRAPH: StoryGraph = {
       opt('Search for them', 4, '#991b1b'),
     ],
     next: (_state, label) =>
-      label === 'Steal from other Pirates' ? 'poneglyphTarget' : 'poneglyphSearchResult',
+      label === 'Steal from other Pirates' ? 'poneglyphTarget' : 'poneglyphSearchLocation',
   },
 
   poneglyphTarget: {
@@ -1038,7 +1037,7 @@ export const STORY_GRAPH: StoryGraph = {
               ...state,
               defeatedOpponents: [...state.defeatedOpponents, state.lastOpponent ?? 'them'],
             }),
-            pendingReturnNode: 'poneglyphRecap',
+            pendingReturnNode: hubIdFor(state),
           }
         : state,
     next: (_state, label) => (label === 'Yes' ? 'rankIncreaseCheck' : 'poneglyphDeathRoll'),
@@ -1067,38 +1066,28 @@ export const STORY_GRAPH: StoryGraph = {
     next: 'growthCheck',
   },
 
+  poneglyphSearchLocation: {
+    type: 'wheel',
+    id: 'poneglyphSearchLocation',
+    category: 'Road Poneglyph',
+    question: 'Where do you look?',
+    icon: '🗺️',
+    options: PONEGLYPH_SEARCH_LOCATIONS,
+    onSelect: (state, label) => ({ ...state, pendingPoneglyphLocation: label }),
+    next: 'poneglyphSearchResult',
+  },
+
   poneglyphSearchResult: {
     type: 'wheel',
     id: 'poneglyphSearchResult',
     category: 'Road Poneglyph',
     question: 'Is it actually there?',
     icon: '🗿',
-    options: poneglyphFindOdds,
-    onSelect: (state, label) => (label === 'Yes' ? withPoneglyph(state) : state),
-    next: (state, label) => (label === 'Yes' ? 'poneglyphRecap' : hubIdFor(state)),
-  },
-
-  poneglyphRecap: {
-    type: 'recap',
-    id: 'poneglyphRecap',
-    condition: (state) => state.poneglyphsCollected.size > 0,
-    title: (state) =>
-      state.poneglyphsCollected.size >= 4
-        ? 'All Four Poneglyphs!'
-        : `You now have ${state.poneglyphsCollected.size} of the 4 Road Poneglyphs!`,
-    body: (state) => {
-      const have = ALL_PONEGLYPHS.filter((p) => state.poneglyphsCollected.has(p)).map(
-        (p) => PONEGLYPH_LABELS[p],
-      )
-      const missing = ALL_PONEGLYPHS.filter((p) => !state.poneglyphsCollected.has(p)).map(
-        (p) => PONEGLYPH_LABELS[p],
-      )
-      if (missing.length === 0) {
-        return `You have the ones from: ${have.join(', ')}. The road to Laugh Tale is complete.`
-      }
-      return `You have the ones from: ${have.join(', ')}.\n\nYou're now only missing the one with ${missing.join(', ')}.`
-    },
-    accent: 'green',
+    options: (state) => poneglyphFindOdds(state, poneglyphLocationModifier(state.pendingPoneglyphLocation ?? '')),
+    onSelect: (state, label) => ({
+      ...(label === 'Yes' ? withPoneglyph(state) : state),
+      pendingPoneglyphLocation: undefined,
+    }),
     next: hubIdFor,
   },
 
@@ -1452,8 +1441,7 @@ export const STORY_GRAPH: StoryGraph = {
         ),
       )
       const masteryOpts =
-        !picked.has('Fighting Style Mastery') &&
-        MASTERY_LEVEL_ORDER.indexOf(state.fightingMastery ?? '') < MASTERY_LEVEL_ORDER.length - 1
+        !picked.has('Fighting Style Mastery') && masteryGrowable(state)
           ? [opt('Fighting Style Mastery', 3, '#94a3b8')]
           : []
       const dfMaxIdx = DEVIL_FRUIT_MASTERY_LEVELS.length - 1
@@ -1478,9 +1466,11 @@ export const STORY_GRAPH: StoryGraph = {
       }
       return { ...state, pendingStatName: label.toLowerCase() as StatKey, pendingGrowthPicked: picked }
     },
-    next: (_state, label) => {
+    next: (state, label) => {
       if (label.endsWith('Haki')) return 'growthHakiTarget'
-      if (label === 'Fighting Style Mastery') return 'growthMasteryTarget'
+      if (label === 'Fighting Style Mastery') {
+        return state.additionalStyles.length > 0 ? 'growthMasteryStylePick' : 'growthMasteryTarget'
+      }
       if (label === 'Devil Fruit Mastery') return 'growthDevilFruitMasteryTarget'
       return 'growthStatTarget'
     },
@@ -1520,15 +1510,38 @@ export const STORY_GRAPH: StoryGraph = {
     next: growthLoopNext,
   },
 
+  // Only reached when the player knows more than one fighting style — picks which one the
+  // "Fighting Style Mastery" growth slot actually improves, before growthMasteryTarget rolls
+  // how far it climbs. A single-style character skips straight to growthMasteryTarget instead
+  // (see growthStatPick's next()), since there's nothing to choose between.
+  growthMasteryStylePick: {
+    type: 'wheel',
+    id: 'growthMasteryStylePick',
+    category: 'Training',
+    question: 'Which fighting style improves?',
+    icon: '🥋',
+    options: (state) => {
+      const all = [
+        { name: state.fightingStyle ?? 'Unknown Style', mastery: state.fightingMastery ?? MASTERY_LEVEL_ORDER[0] },
+        ...state.additionalStyles.map((s) => ({ name: s.style, mastery: s.mastery })),
+      ]
+      const growable = all.filter((s) => MASTERY_LEVEL_ORDER.indexOf(s.mastery) < MASTERY_LEVEL_ORDER.length - 1)
+      const pool = growable.length > 0 ? growable : all
+      return pool.map((s) => opt(s.name, 1, '#94a3b8', `Currently ${s.mastery}`))
+    },
+    onSelect: (state, label) => ({ ...state, pendingMasteryStyle: label }),
+    next: 'growthMasteryTarget',
+  },
+
   growthMasteryTarget: {
     type: 'wheel',
     id: 'growthMasteryTarget',
     question: 'What level do you reach?',
     icon: '📈',
-    options: (state) => higherMasteryOptions(state.fightingMastery ?? MASTERY_LEVEL_ORDER[0]),
+    options: (state) => higherMasteryOptions(currentMasteryForStyle(state, masteryTargetStyle(state))),
     onSelect: (state, label) => ({
-      ...state,
-      fightingMastery: label,
+      ...applyMasteryForStyle(state, masteryTargetStyle(state), label),
+      pendingMasteryStyle: undefined,
       pendingStatRolls: state.pendingStatRolls - 1,
     }),
     next: growthLoopNext,
@@ -1595,7 +1608,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Devil Fruit',
     question: 'Do you find one?',
     icon: '🍈',
-    options: [opt('Yes', 5, '#7c3aed'), opt('No, it slips away', 5, '#374151')],
+    options: [opt('Yes', 65, '#7c3aed'), opt('No, it slips away', 35, '#374151')],
     next: (state, label) => (label === 'Yes' ? 'devilFruitFoundType' : hubIdFor(state)),
   },
 

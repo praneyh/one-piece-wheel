@@ -136,11 +136,18 @@ export type CharacterState = {
   fightingMastery?: string
   additionalStyles: { style: string; mastery: string }[]
   pendingNewStyle?: string
+  /** Which known fighting style (primary or one of additionalStyles) a "Fighting Style Mastery"
+   * growth pick targets — only set (via growthMasteryStylePick) when the player knows more than
+   * one style; otherwise growthMasteryTarget defaults to the primary style. */
+  pendingMasteryStyle?: string
   weapon?: string
   weaponHasDevilFruit?: boolean
   rank: string
   rankHistory: string[]
   poneglyphsCollected: Set<PoneglyphLocation>
+  /** Which spot (from PONEGLYPH_SEARCH_LOCATIONS) a passive Road Poneglyph search is currently
+   * looking — set by poneglyphSearchLocation, read by poneglyphSearchResult's find odds. */
+  pendingPoneglyphLocation?: string
   crew: CrewMember[]
   /** Pirate-only: whose crew you started with, if any (your own, or a canon crew's name). */
   crewOrigin?: string
@@ -235,21 +242,11 @@ export function resolveOptions(node: WheelNode, state: CharacterState): WheelOpt
   return typeof node.options === 'function' ? node.options(state) : node.options
 }
 
-export type RecapNode = {
-  type: 'recap'
-  id: string
-  condition?: (state: CharacterState) => boolean
-  title: (state: CharacterState) => string
-  body: (state: CharacterState) => string
-  accent: 'green' | 'pink'
-  next: string | ((state: CharacterState) => string)
-}
-
 export type EndingNode = {
   type: 'ending'
   id: string
 }
 
-export type StoryNode = WheelNode | RecapNode | EndingNode
+export type StoryNode = WheelNode | EndingNode
 
 export type StoryGraph = Record<string, StoryNode>

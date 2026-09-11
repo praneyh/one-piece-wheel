@@ -478,13 +478,13 @@ const OPPONENT_CREW_EDGE_BONUS = 3
 /** How a descriptive crew-strength tier (see CREW_STRENGTH_OPTIONS) translates into a multiple
  * of the player's own overall strength, for a crewmate whose exact stats aren't tracked. */
 const CREW_STRENGTH_TIER_MULTIPLIER: Record<string, number> = {
-  'Much weaker than you on average': 0.35,
-  'Weaker than you on average': 0.6,
-  'Slightly weaker than you on average': 0.8,
-  'Equal in strength to you on average': 1.0,
-  'Slightly stronger than you on average': 1.2,
-  'Stronger than you on average': 1.45,
-  'Much stronger than you on average': 1.75,
+  'Much weaker than you': 0.35,
+  'Weaker than you': 0.6,
+  'Slightly weaker than you': 0.8,
+  'Equal in strength to you': 1.0,
+  'Slightly stronger than you': 1.2,
+  'Stronger than you': 1.45,
+  'Much stronger than you': 1.75,
 }
 
 /** A crewmate's own 1-100 overall-strength estimate: an exact lookup for a recruited named NPC
@@ -603,6 +603,15 @@ function higherLadderOptions(ladder: string[], current: string, colors: string[]
   return higher.map((label, i) => opt(label, Math.max(1, Math.round(20 * Math.pow(0.55, i))), colors[(idx + 1 + i) % colors.length]))
 }
 
+/** True if at least one known fighting style (the primary one, or any learned via
+ * fightingStyleLearn) hasn't hit Grandmaster yet — "Fighting Style Mastery" stays a single
+ * wheel slot regardless of how many styles are growable; growthMasteryStylePick is what picks
+ * which specific style benefits once that slot is landed on. */
+export function masteryGrowable(state: CharacterState): boolean {
+  const masteries = [state.fightingMastery, ...state.additionalStyles.map((s) => s.mastery)]
+  return masteries.some((m) => MASTERY_LEVEL_ORDER.indexOf(m ?? '') < MASTERY_LEVEL_ORDER.length - 1)
+}
+
 /** How many distinct stats (including the 3 Haki types, fighting mastery, and Devil Fruit
  * mastery if applicable) can still grow at all. */
 export function growableCount(state: CharacterState): number {
@@ -611,7 +620,7 @@ export function growableCount(state: CharacterState): number {
     return statTierIndex(key, state.stats[key]) < STAT_TIER_LADDERS[key].length - 1
   }).length
   const hakiCount = HAKI_TYPES.filter((t) => state.haki[t] !== 'Advanced').length
-  const masteryCount = MASTERY_LEVEL_ORDER.indexOf(state.fightingMastery ?? '') < MASTERY_LEVEL_ORDER.length - 1 ? 1 : 0
+  const masteryCount = masteryGrowable(state) ? 1 : 0
   const dfMaxIdx = DEVIL_FRUIT_MASTERY_LEVELS.length - 1
   const dfIdx1 = DEVIL_FRUIT_MASTERY_LEVELS.indexOf(state.devilFruitMastery ?? DEVIL_FRUIT_MASTERY_LEVELS[0])
   const dfIdx2 = state.secondDevilFruit
@@ -676,11 +685,33 @@ export function immortalizeOption(hubSpinCount: number): WheelOption | null {
   return opt('Immortalize', weight, '#111827', 'Your legend is etched into the wheel forever.')
 }
 
-/** Weighted Yes/No odds for a post-fight rank/bounty bump, favoring wins against relatively stronger foes. */
+/** How steep the relative-fame swing is in rankIncreaseOdds — smaller means a smaller gap
+ * between an opponent's notoriety and what's "expected" at the player's current rank already
+ * produces lopsided odds. */
+const RANK_NOTORIETY_EDGE_SCALE = 4
+
+/**
+ * Weighted Yes/No odds for a post-fight rank/bounty bump — driven by who the opponent *is* in
+ * the wider One Piece world (their `notoriety`, 0-10) *relative to* what's already expected at
+ * the player's own current rank/bounty position, not by how hard the fight was. The world
+ * doesn't know or care how close the fight secretly was; it only reacts to who got beaten, and
+ * whether that name is a step up from what someone at your level usually beats.
+ *
+ * `expectedNotoriety` maps the player's rank tier (tierIndex, 0-7) linearly onto the same 0-10
+ * notoriety scale — a brand-new Ensign is "expected" to be fighting nobodies (near 0), while a
+ * Fleet-Admiral-tier character is expected to already be trading blows with Yonko-caliber names
+ * (near 10). The gap between the opponent's actual notoriety and that expectation is what
+ * drives the odds: an Ensign who beats a mid-fame pirate like Foxy (notoriety 3, far above the
+ * ~0 expected at that rank) still gets a strong promotion chance even though Foxy is nowhere
+ * near Emperor-tier fame — while a Yonko-tier legend stomping that same Foxy sees almost no
+ * chance at all, since it's far beneath what's already expected of them.
+ */
 export function rankIncreaseOdds(state: CharacterState, opponentName: string): WheelOption[] {
-  const difficulty = -combatEdge(state, opponentName) // positive = the fight was hard for me
+  const notoriety = npcNotoriety(opponentName)
+  const expectedNotoriety = (tierIndex(state) / 7) * 10
+  const relativeGap = notoriety - expectedNotoriety
   const bonus = bloodlineDef(state)?.rankOddsBonus ?? 0
-  const yesWeight = Math.min(95, Math.max(2, Math.round(25 + difficulty * 1.75 + bonus)))
+  const yesWeight = Math.max(1, Math.min(99, logisticWeight(relativeGap, RANK_NOTORIETY_EDGE_SCALE) + bonus))
   const noWeight = 100 - yesWeight
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#374151')]
 }
@@ -997,6 +1028,11 @@ export function marineTierForRank(state: CharacterState): 1 | 2 | 3 | 4 | 5 {
   return (Math.min(4, Math.floor(frac * 5)) + 1) as 1 | 2 | 3 | 4 | 5
 }
 
+/** Each Road Poneglyph you've found adds this much straight into rankPressureWeight — your
+ * reputation as someone chasing (or already carrying) a piece of the road to Laugh Tale
+ * precedes you, independent of how your stats compare to your current rank. */
+const PONEGLYPH_RANK_PRESSURE_BONUS_PER = 1.5
+
 /**
  * How much weight the "Get a new bounty"/"Get promoted" hub option should carry, given how the
  * player's raw stat-based overall strength compares to where they currently sit on the rank
@@ -1004,7 +1040,8 @@ export function marineTierForRank(state: CharacterState): 1 | 2 | 3 | 4 | 5 {
  * position; being well ahead of that (stats far outpacing your current rank) makes the
  * promotion option common, while being well behind it (an over-ranked, under-powered character)
  * makes it rare — reflecting that the wheel is what's actually deciding whether the world
- * notices you're overdue, not the other way around.
+ * notices you're overdue, not the other way around. Road Poneglyphs collected add a further
+ * flat bonus on top (see PONEGLYPH_RANK_PRESSURE_BONUS_PER).
  */
 export function rankPressureWeight(state: CharacterState, baseWeight: number): number {
   const ladder = rankLadderFor(state)
@@ -1012,15 +1049,48 @@ export function rankPressureWeight(state: CharacterState, baseWeight: number): n
   const expectedIdx = Math.round((playerOverallStrength(state) / 100) * maxIdx)
   const actualIdx = ladder.indexOf(state.rank)
   const gap = expectedIdx - (actualIdx === -1 ? 0 : actualIdx)
-  return Math.max(1, Math.min(15, Math.round(baseWeight + gap * 1.2)))
+  const poneglyphBonus = state.poneglyphsCollected.size * PONEGLYPH_RANK_PRESSURE_BONUS_PER
+  return Math.max(1, Math.min(15, Math.round(baseWeight + gap * 1.2 + poneglyphBonus)))
+}
+
+/** Where a Road Poneglyph search actually leads — picked on its own wheel before the find roll,
+ * each with a distinct chance of panning out (see PONEGLYPH_LOCATION_MODIFIERS). A promising
+ * but dangerous lead is rarer to land on than an idle rumor, but pays off far more often. */
+export const PONEGLYPH_SEARCH_LOCATIONS: WheelOption[] = [
+  opt("A dusty historian's archive", 5, '#78350f', 'A methodical, promising lead.'),
+  opt('Rumors from a dockside tavern', 6, '#57534e', 'Cheap talk — probably nothing.'),
+  opt('A sunken ancient ruin', 3, '#0c4a6e', 'Dangerous to reach, but the real thing is often buried here.'),
+  opt('An abandoned pirate stronghold', 4, '#7f1d1d', 'Left behind by a crew that never made it back.'),
+  opt('A remote island shrine', 4, '#166534', 'Sacred ground, rarely disturbed.'),
+  opt('A local legend passed down for generations', 5, '#78716c', 'Probably just a story. Probably.'),
+  opt("The World Government's restricted archives", 1, '#1d4ed8', "If it's real, it's locked up tight — and heavily guarded."),
+  opt("A Celestial Dragon's private vault", 1, '#fef08a', "Astronomically risky to even attempt — but if it's anywhere, it's here."),
+]
+
+/** Directly added to the base "Yes" weight (out of 10) in poneglyphFindOdds — a promising lead
+ * skews positive, an idle rumor skews negative. */
+const PONEGLYPH_LOCATION_MODIFIERS: Record<string, number> = {
+  "A dusty historian's archive": 1,
+  'Rumors from a dockside tavern': -2,
+  'A sunken ancient ruin': 2,
+  'An abandoned pirate stronghold': 0,
+  'A remote island shrine': 1,
+  'A local legend passed down for generations': -1,
+  "The World Government's restricted archives": 4,
+  "A Celestial Dragon's private vault": 4,
+}
+
+export function poneglyphLocationModifier(location: string): number {
+  return PONEGLYPH_LOCATION_MODIFIERS[location] ?? 0
 }
 
 /** Road Poneglyphs are famously scarce — searching a location rarely turns one up, though a
- * higher-tier explorer with better resources fares a little better. */
-export function poneglyphFindOdds(state: CharacterState): WheelOption[] {
+ * higher-tier explorer with better resources fares a little better, and where you actually look
+ * (see PONEGLYPH_SEARCH_LOCATIONS) swings the odds further either way. */
+export function poneglyphFindOdds(state: CharacterState, locationModifier = 0): WheelOption[] {
   const t = tierIndex(state)
   const bonus = bloodlineDef(state)?.poneglyphOddsBonus ?? 0
-  const yesWeight = Math.min(9, Math.max(1, 1 + Math.floor(t / 3) + bonus))
+  const yesWeight = Math.min(9, Math.max(1, 1 + Math.floor(t / 3) + bonus + locationModifier))
   const noWeight = Math.max(1, 10 - yesWeight)
   return [opt('Yes', yesWeight, '#16a34a'), opt('No', noWeight, '#374151')]
 }
@@ -1045,6 +1115,12 @@ export type NpcDef = {
    * grants a flat combat edge bonus against the player. Left unset for lone individuals and for
    * roster entries that already represent a whole crew/group as a single stat block. */
   hasCrew?: boolean
+  /** 0-10: how significant/famous this opponent is within the wider One Piece world — an
+   * Emperor or Fleet Admiral-caliber name vs. an anonymous mook — entirely independent of the
+   * StrengthProfile above. Drives rankIncreaseOdds: beating someone important makes headlines
+   * and earns a promotion/bounty jump regardless of how easy the fight actually was, while
+   * stomping a nobody barely moves the needle even after a hard-fought win. */
+  notoriety: number
 }
 
 /**
@@ -1100,32 +1176,32 @@ function profile(
 // MARINE_TIER_5. minTier is unused for this selection (kept only because NpcDef requires it).
 
 export const MARINE_TIER_1: NpcDef[] = [
-  { name: 'Helmeppo', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#fca5a5', lethality: 0 },
-  { name: 'Fullbody', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#93c5fd', lethality: 0 },
-  { name: 'Jango', minTier: 0, profile: profile(0, 1, 1, 1, {}, 1), weight: 3, color: '#bef264', lethality: 0 },
-  { name: 'Nezumi', minTier: 0, profile: profile(0, 1, 1, 1, {}, 1), weight: 3, color: '#fda4af', lethality: 0 },
-  { name: 'T-Bone', minTier: 1, profile: profile(1, 1, 1, 2, {}, 1), weight: 2, color: '#7c2d12', lethality: 1 },
-  { name: 'Doberman', minTier: 1, profile: profile(1, 1, 1, 2, {}, 2), weight: 2, color: '#78716c', lethality: 1 },
+  { name: 'Helmeppo', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#fca5a5', lethality: 0, notoriety: 2 },
+  { name: 'Fullbody', minTier: 0, profile: profile(0, 1, 0, 1, {}, 1), weight: 3, color: '#93c5fd', lethality: 0, notoriety: 2 },
+  { name: 'Jango', minTier: 0, profile: profile(0, 1, 1, 1, {}, 1), weight: 3, color: '#bef264', lethality: 0, notoriety: 2 },
+  { name: 'Nezumi', minTier: 0, profile: profile(0, 1, 1, 1, {}, 1), weight: 3, color: '#fda4af', lethality: 0, notoriety: 2 },
+  { name: 'T-Bone', minTier: 1, profile: profile(1, 1, 1, 2, {}, 1), weight: 2, color: '#7c2d12', lethality: 1, notoriety: 3 },
+  { name: 'Doberman', minTier: 1, profile: profile(1, 1, 1, 2, {}, 2), weight: 2, color: '#78716c', lethality: 1, notoriety: 3 },
 ]
 
 export const MARINE_TIER_2: NpcDef[] = [
-  { name: 'Tashigi', minTier: 1, profile: profile(1, 2, 1, 2, {}, 2), weight: 3, color: '#38bdf8', lethality: 0 },
+  { name: 'Tashigi', minTier: 1, profile: profile(1, 2, 1, 2, {}, 2), weight: 3, color: '#38bdf8', lethality: 0, notoriety: 4 },
   {
     name: 'Ain',
     minTier: 1,
     profile: profile(2, 2, 2, 2, { Observation: 'Basic' }, 2),
     weight: 3,
     color: '#22d3ee',
-    lethality: 0,
+    lethality: 0, notoriety: 3,
   },
-  { name: 'Hina', minTier: 2, profile: profile(2, 3, 2, 3, {}, 2, 2), weight: 3, color: '#f472b6', lethality: 0 },
+  { name: 'Hina', minTier: 2, profile: profile(2, 3, 2, 3, {}, 2, 2), weight: 3, color: '#f472b6', lethality: 0, notoriety: 4 },
   {
     name: 'Momonga',
     minTier: 2,
     profile: profile(3, 2, 3, 3, { Armament: 'Basic' }, 3),
     weight: 2,
     color: '#a3a3a3',
-    lethality: 1,
+    lethality: 1, notoriety: 4,
   },
   {
     name: 'Bastille',
@@ -1133,7 +1209,7 @@ export const MARINE_TIER_2: NpcDef[] = [
     profile: profile(2, 2, 3, 3, { Armament: 'Basic' }, 2),
     weight: 2,
     color: '#65a30d',
-    lethality: 1,
+    lethality: 1, notoriety: 3,
   },
   {
     name: 'Hannyabal',
@@ -1141,7 +1217,7 @@ export const MARINE_TIER_2: NpcDef[] = [
     profile: profile(2, 2, 3, 3, {}, 2),
     weight: 2,
     color: '#d97706',
-    lethality: 1,
+    lethality: 1, notoriety: 3,
   },
 ]
 
@@ -1154,7 +1230,7 @@ export const MARINE_TIER_3: NpcDef[] = [
     profile: profile(2, 2, 2, 3, { Observation: 'Basic', "Conqueror's": 'Basic' }, 2),
     weight: 3,
     color: '#f9a8d4',
-    lethality: 0,
+    lethality: 0, notoriety: 6,
   },
   {
     name: 'Smoker',
@@ -1162,7 +1238,7 @@ export const MARINE_TIER_3: NpcDef[] = [
     profile: profile(3, 4, 3, 5, { Armament: 'Basic', Observation: 'Basic' }, 3, 4),
     weight: 3,
     color: '#94a3b8',
-    lethality: 1,
+    lethality: 1, notoriety: 6,
   },
   {
     name: 'X-Drake',
@@ -1170,7 +1246,7 @@ export const MARINE_TIER_3: NpcDef[] = [
     profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3, 3),
     weight: 2,
     color: '#4d7c0f',
-    lethality: 1,
+    lethality: 1, notoriety: 5,
   },
   {
     name: 'Vergo',
@@ -1178,7 +1254,7 @@ export const MARINE_TIER_3: NpcDef[] = [
     profile: profile(4, 3, 5, 4, { Armament: 'Advanced', Observation: 'Basic' }, 4),
     weight: 2,
     color: '#1f2937',
-    lethality: 2,
+    lethality: 2, notoriety: 4,
   },
   {
     // A Vice Admiral present at Marineford with an unusual glass-and-mirror devil fruit.
@@ -1187,7 +1263,7 @@ export const MARINE_TIER_3: NpcDef[] = [
     profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3, 2),
     weight: 2,
     color: '#c4b5fd',
-    lethality: 1,
+    lethality: 1, notoriety: 4,
   },
   {
     name: 'Strawberry',
@@ -1195,7 +1271,7 @@ export const MARINE_TIER_3: NpcDef[] = [
     profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3),
     weight: 2,
     color: '#fb7185',
-    lethality: 1,
+    lethality: 1, notoriety: 4,
   },
 ]
 
@@ -1206,7 +1282,7 @@ export const MARINE_TIER_4: NpcDef[] = [
     profile: profile(5, 3, 5, 4, { Armament: 'Basic' }, 3),
     weight: 3,
     color: '#57534e',
-    lethality: 1,
+    lethality: 1, notoriety: 5,
   },
   {
     name: 'Tsuru',
@@ -1214,7 +1290,7 @@ export const MARINE_TIER_4: NpcDef[] = [
     profile: profile(5, 3, 4, 4, { Armament: 'Advanced', Observation: 'Basic' }, 4),
     weight: 2,
     color: '#0ea5e9',
-    lethality: 1,
+    lethality: 1, notoriety: 5,
   },
   {
     // Impel Down's Chief Warden — poison powers feared even by top-tier pirates.
@@ -1223,7 +1299,7 @@ export const MARINE_TIER_4: NpcDef[] = [
     profile: profile(6, 4, 7, 6, { Armament: 'Advanced' }, 4, 4),
     weight: 2,
     color: '#581c87',
-    lethality: 2,
+    lethality: 2, notoriety: 7,
   },
   {
     name: 'Sengoku',
@@ -1231,7 +1307,7 @@ export const MARINE_TIER_4: NpcDef[] = [
     profile: profile(8, 5, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 4),
     weight: 2,
     color: '#b45309',
-    lethality: 1,
+    lethality: 1, notoriety: 8,
   },
   {
     name: 'Kong',
@@ -1239,7 +1315,7 @@ export const MARINE_TIER_4: NpcDef[] = [
     profile: profile(7, 6, 8, 7, { Armament: 'Advanced', Observation: 'Basic' }, 5),
     weight: 1,
     color: '#3f3f46',
-    lethality: 2,
+    lethality: 2, notoriety: 7,
   },
 ]
 
@@ -1250,7 +1326,7 @@ export const MARINE_TIER_5: NpcDef[] = [
     profile: profile(9, 6, 9, 7, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
     weight: 4,
     color: '#78716c',
-    lethality: 0,
+    lethality: 0, notoriety: 9,
   },
   {
     name: 'Kuzan',
@@ -1258,7 +1334,7 @@ export const MARINE_TIER_5: NpcDef[] = [
     profile: profile(8, 7, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
     weight: 3,
     color: '#2563eb',
-    lethality: 1,
+    lethality: 1, notoriety: 8,
   },
   {
     name: 'Issho',
@@ -1266,7 +1342,7 @@ export const MARINE_TIER_5: NpcDef[] = [
     profile: profile(8, 6, 8, 7, { Armament: 'Basic', Observation: 'Advanced' }, 5, 5),
     weight: 3,
     color: '#a855f7',
-    lethality: 1,
+    lethality: 1, notoriety: 8,
   },
   {
     // Kizaru's own namesake/gimmick is genuinely "attacks travel at the speed of light" — the
@@ -1276,7 +1352,7 @@ export const MARINE_TIER_5: NpcDef[] = [
     profile: profile(8, 10, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
     weight: 2,
     color: '#facc15',
-    lethality: 2,
+    lethality: 2, notoriety: 9,
   },
   {
     // Akainu sits at the very ceiling of what's canonically shown — alongside Kaido, Big Mom,
@@ -1286,7 +1362,7 @@ export const MARINE_TIER_5: NpcDef[] = [
     profile: profile(9, 8, 9, 8, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
     weight: 2,
     color: '#991b1b',
-    lethality: 3,
+    lethality: 3, notoriety: 10,
   },
 ]
 
@@ -1298,12 +1374,35 @@ export const MARINE_ROSTERS: Record<1 | 2 | 3 | 4 | 5, NpcDef[]> = {
   5: MARINE_TIER_5,
 }
 
+/** For a Pirate who started as part of an existing named crew (crewOrigin, set from
+ * MAJOR_PIRATE_CREWS), the roster NPC entries that represent that same crew — its captain
+ * and/or the crew itself as a group stat block — so they're excluded from every future
+ * opponent/threat pool alongside the deceased and the recruited. You can't run into your own
+ * crew as a threat, whether that's "your captain marks you for death" or "you're sent to hunt
+ * down" the very crew you sail with. Crews with no matching named NPC entry in the rosters
+ * (e.g. Straw Hat Pirates, Roger Pirates) need no entry here. */
+const CREW_ORIGIN_SELF_ENTRIES: Record<string, string[]> = {
+  'Alvida Pirates': ["Alvida's Gang"],
+  'Foxy Pirates': ["Foxy's Crew"],
+  'Krieg Pirates': ["Krieg's Remnants"],
+  'Baroque Works': ['A Baroque Works Agent', 'Crocodile', 'Mr. 9'],
+  'Red Hair Pirates': ['Shanks'],
+  'Big Mom Pirates': ['A Big Mom Pirates Commander', 'Charlotte Linlin'],
+  'Beast Pirates': ['A Beast Pirates Commander', 'Kaido'],
+  'Blackbeard Pirates': ["Blackbeard's Crew", 'Marshall D. Teach "Blackbeard"'],
+  'Kid Pirates': ['Kid & Killer'],
+}
+
 /** Builds wheel options straight from the Marine roster matching the player's current
  * rank/bounty tier — no separate difficulty spin, and dead Marines are excluded. */
-/** An NPC is off the table once they're dead, and once they're recruited into your own crew —
- * you can't fight someone who already sails with you. */
+/** An NPC is off the table once they're dead, once they're recruited into your own crew (you
+ * can't fight someone who already sails with you), or — if you started as part of an existing
+ * named crew — once they're a stand-in for that same crew (you can't run into your own crew as
+ * a threat). */
 function isAvailable(state: CharacterState, name: string): boolean {
-  return !state.deceased.has(name) && !state.recruited.has(name)
+  if (state.deceased.has(name) || state.recruited.has(name)) return false
+  if (state.crewOrigin && CREW_ORIGIN_SELF_ENTRIES[state.crewOrigin]?.includes(name)) return false
+  return true
 }
 
 export function marineRosterOptions(state: CharacterState): WheelOption[] {
@@ -1314,14 +1413,14 @@ export function marineRosterOptions(state: CharacterState): WheelOption[] {
 }
 
 export const PIRATE_ROSTER: NpcDef[] = [
-  { name: "Alvida's Gang", minTier: 0, profile: profile(0, 0, 0, 0, {}, 0), weight: 4, color: '#7f1d1d', lethality: 1 },
+  { name: "Alvida's Gang", minTier: 0, profile: profile(0, 0, 0, 0, {}, 0), weight: 4, color: '#7f1d1d', lethality: 1, notoriety: 1 },
   {
     name: 'A drunken island bandit crew',
     minTier: 0,
     profile: profile(0, 0, 0, 0, {}, 0),
     weight: 3,
     color: '#78350f',
-    lethality: 1,
+    lethality: 1, notoriety: 1,
   },
   {
     name: "Bellamy's Crew",
@@ -1329,7 +1428,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(2, 3, 2, 2, {}, 2, 2),
     weight: 3,
     color: '#f97316',
-    lethality: 1,
+    lethality: 1, notoriety: 3,
   },
   {
     name: "Foxy's Crew",
@@ -1337,7 +1436,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(1, 2, 1, 2, {}, 1, 1),
     weight: 3,
     color: '#ea580c',
-    lethality: 0,
+    lethality: 0, notoriety: 3,
   },
   {
     name: "Krieg's Remnants",
@@ -1345,7 +1444,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(2, 1, 3, 2, {}, 2),
     weight: 2,
     color: '#57534e',
-    lethality: 2,
+    lethality: 2, notoriety: 2,
   },
   {
     name: 'A Baroque Works Agent',
@@ -1353,7 +1452,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(2, 2, 2, 2, {}, 2, 2),
     weight: 2,
     color: '#334155',
-    lethality: 2,
+    lethality: 2, notoriety: 2,
   },
   {
     name: "Hawkins' Crew",
@@ -1361,7 +1460,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(4, 3, 3, 3, { Armament: 'Basic' }, 3, 3),
     weight: 2,
     color: '#581c87',
-    lethality: 2,
+    lethality: 2, notoriety: 5,
   },
   {
     name: "Capone Bege's Crew",
@@ -1369,7 +1468,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(4, 2, 5, 3, { Armament: 'Basic' }, 3, 3),
     weight: 2,
     color: '#1e293b',
-    lethality: 2,
+    lethality: 2, notoriety: 5,
   },
   {
     name: 'Kid & Killer',
@@ -1377,7 +1476,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(6, 4, 5, 5, { Armament: 'Advanced', "Conqueror's": 'Basic' }, 4, 4),
     weight: 2,
     color: '#dc2626',
-    lethality: 2,
+    lethality: 2, notoriety: 7,
   },
   {
     name: "Bonney's Crew",
@@ -1385,7 +1484,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(5, 3, 3, 4, {}, 3, 3),
     weight: 2,
     color: '#f472b6',
-    lethality: 1,
+    lethality: 1, notoriety: 6,
   },
   {
     name: "Blackbeard's Crew",
@@ -1393,7 +1492,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(7, 4, 6, 5, { Armament: 'Basic' }, 4, 4),
     weight: 2,
     color: '#0c0a09',
-    lethality: 3,
+    lethality: 3, notoriety: 8,
   },
   {
     // Buggy's the figurehead, but the muscle is Mihawk (world's strongest swordsman, former
@@ -1404,7 +1503,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(8, 6, 7, 6, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
     weight: 1,
     color: '#ca8a04',
-    lethality: 2,
+    lethality: 2, notoriety: 9,
   },
   {
     // Sweet/All-Star Commanders sit just below the true Yonko-tier ceiling below.
@@ -1413,7 +1512,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(8, 7, 7, 6, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Basic' }, 5, 4),
     weight: 1,
     color: '#be185d',
-    lethality: 3,
+    lethality: 3, notoriety: 6,
   },
   {
     name: 'A Beast Pirates Commander',
@@ -1421,7 +1520,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(8, 6, 8, 6, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
     weight: 1,
     color: '#1e3a8a',
-    lethality: 3,
+    lethality: 3, notoriety: 6,
   },
   {
     // Big Mom sits at the ceiling of what canon has shown — alongside Kaido, Akainu,
@@ -1431,7 +1530,7 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(9, 6, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
     weight: 1,
     color: '#be185d',
-    lethality: 3,
+    lethality: 3, notoriety: 10,
   },
   {
     // "The strongest creature" — tied at the very top of what canon has depicted, deliberately
@@ -1441,19 +1540,19 @@ export const PIRATE_ROSTER: NpcDef[] = [
     profile: profile(9, 6, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
     weight: 1,
     color: '#1e3a8a',
-    lethality: 3,
+    lethality: 3, notoriety: 10,
   },
 ]
 
 export const WORLD_EVENT_THREATS: NpcDef[] = [
-  { name: 'A Sea King', minTier: 1, profile: profile(3, 2, 4, 3, {}, 0), weight: 3, color: '#0c4a6e', lethality: 2 },
+  { name: 'A Sea King', minTier: 1, profile: profile(3, 2, 4, 3, {}, 0), weight: 3, color: '#0c4a6e', lethality: 2, notoriety: 1 },
   {
     name: 'A desperate rival captain',
     minTier: 2,
     profile: profile(2, 2, 2, 2, {}, 2),
     weight: 3,
     color: '#7f1d1d',
-    lethality: 1,
+    lethality: 1, notoriety: 2,
     hasCrew: true,
   },
   {
@@ -1462,7 +1561,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(3, 2, 4, 2, {}, 0),
     weight: 3,
     color: '#0369a1',
-    lethality: 2,
+    lethality: 2, notoriety: 0,
   },
   {
     name: 'A rampaging Marine fleet',
@@ -1470,7 +1569,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(4, 2, 4, 3, { Armament: 'Basic' }, 2),
     weight: 3,
     color: '#1d4ed8',
-    lethality: 2,
+    lethality: 2, notoriety: 2,
   },
   {
     name: 'An Ancient Weapon guardian',
@@ -1478,7 +1577,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(8, 4, 9, 6, {}, 0),
     weight: 2,
     color: '#374151',
-    lethality: 3,
+    lethality: 3, notoriety: 5,
   },
   {
     name: 'A CP0 black-ops agent',
@@ -1486,7 +1585,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(6, 5, 5, 5, { Armament: 'Advanced', Observation: 'Advanced' }, 4),
     weight: 2,
     color: '#1c1917',
-    lethality: 3,
+    lethality: 3, notoriety: 4,
   },
   {
     name: 'A rival Yonko commander',
@@ -1494,7 +1593,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(8, 6, 7, 6, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
     weight: 2,
     color: '#7c2d12',
-    lethality: 3,
+    lethality: 3, notoriety: 7,
     hasCrew: true,
   },
   {
@@ -1507,7 +1606,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(9, 7, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
     weight: 1,
     color: '#1e1b4b',
-    lethality: 3,
+    lethality: 3, notoriety: 8,
   },
   {
     // Overwhelmed four Straw Hats (including Jinbe) and defeated Scopper Gaban — mostly through
@@ -1518,7 +1617,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(8, 6, 7, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Basic' }, 5, 4),
     weight: 1,
     color: '#7c2d92',
-    lethality: 3,
+    lethality: 3, notoriety: 6,
   },
   {
     // Explicitly the weakest Knight of God shown — easily beaten by Gaban, Rayleigh, Luffy, and
@@ -1529,7 +1628,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(6, 4, 7, 8, { Armament: 'Advanced', Observation: 'Basic', "Conqueror's": 'Basic' }, 3, 4),
     weight: 2,
     color: '#3f6212',
-    lethality: 3,
+    lethality: 3, notoriety: 5,
   },
   {
     // Beats multiple giants with ease but was easily defeated by three Straw Hats without them
@@ -1540,7 +1639,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(7, 5, 7, 8, { Armament: 'Advanced', Observation: 'Basic', "Conqueror's": 'Basic' }, 3, 5),
     weight: 1,
     color: '#78350f',
-    lethality: 3,
+    lethality: 3, notoriety: 6,
   },
   {
     // One of the Five Elders — shown transforming into an immense Ancient/Mythical Zoan
@@ -1550,7 +1649,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(9, 5, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
     weight: 1,
     color: '#f3f4f6',
-    lethality: 3,
+    lethality: 3, notoriety: 9,
   },
   {
     // One of the Five Elders — canon implies all five wield comparably overwhelming,
@@ -1560,7 +1659,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(9, 6, 8, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
     weight: 1,
     color: '#e5e7eb',
-    lethality: 3,
+    lethality: 3, notoriety: 9,
   },
   {
     name: 'Saint Topman Warcury',
@@ -1568,7 +1667,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(8, 6, 8, 7, { Armament: 'Advanced', Observation: 'Basic' }, 5, 4),
     weight: 1,
     color: '#d1d5db',
-    lethality: 3,
+    lethality: 3, notoriety: 9,
   },
   {
     name: 'Saint Ethanbaron V. Nusjuro',
@@ -1576,7 +1675,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(8, 5, 9, 7, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 4),
     weight: 1,
     color: '#9ca3af',
-    lethality: 3,
+    lethality: 3, notoriety: 9,
   },
   {
     name: 'Saint Shepherd Ju Peng',
@@ -1584,7 +1683,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(9, 7, 7, 6, { Armament: 'Advanced', Observation: 'Advanced' }, 5, 5),
     weight: 1,
     color: '#f9fafb',
-    lethality: 3,
+    lethality: 3, notoriety: 9,
   },
   {
     // The mysterious figure on the Empty Throne, above even the Five Elders — deliberately kept
@@ -1594,7 +1693,7 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(9, 6, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
     weight: 1,
     color: '#18181b',
-    lethality: 3,
+    lethality: 3, notoriety: 10,
   },
   {
     // Revealed as the true King commanding even the Five Elders — the same treatment as Imu:
@@ -1604,20 +1703,20 @@ export const WORLD_EVENT_THREATS: NpcDef[] = [
     profile: profile(9, 7, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
     weight: 1,
     color: '#27272a',
-    lethality: 3,
+    lethality: 3, notoriety: 10,
   },
 ]
 
 export const RIVAL_ROSTER: NpcDef[] = [
-  { name: 'Duval', minTier: 0, profile: profile(1, 1, 1, 2, {}, 1), weight: 3, color: '#b45309', lethality: 0 },
-  { name: 'Mr. 9', minTier: 0, profile: profile(0, 0, 0, 1, {}, 0), weight: 2, color: '#78716c', lethality: 1 },
+  { name: 'Duval', minTier: 0, profile: profile(1, 1, 1, 2, {}, 1), weight: 3, color: '#b45309', lethality: 0, notoriety: 2 },
+  { name: 'Mr. 9', minTier: 0, profile: profile(0, 0, 0, 1, {}, 0), weight: 2, color: '#78716c', lethality: 1, notoriety: 1 },
   {
     name: 'Arlong',
     minTier: 1,
     profile: profile(3, 2, 3, 3, {}, 2),
     weight: 3,
     color: '#0891b2',
-    lethality: 2,
+    lethality: 2, notoriety: 4,
     hasCrew: true,
   },
   {
@@ -1626,7 +1725,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(2, 3, 2, 2, {}, 2, 2),
     weight: 2,
     color: '#f97316',
-    lethality: 1,
+    lethality: 1, notoriety: 3,
     hasCrew: true,
   },
   {
@@ -1635,7 +1734,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(4, 3, 3, 3, {}, 2, 3),
     weight: 2,
     color: '#84cc16',
-    lethality: 2,
+    lethality: 2, notoriety: 5,
   },
   {
     name: 'Capone Bege',
@@ -1643,7 +1742,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(4, 2, 5, 3, { Armament: 'Basic' }, 3, 3),
     weight: 2,
     color: '#1e293b',
-    lethality: 2,
+    lethality: 2, notoriety: 5,
     hasCrew: true,
   },
   {
@@ -1652,7 +1751,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(7, 4, 6, 5, { Armament: 'Advanced', Observation: 'Basic' }, 4, 4),
     weight: 2,
     color: '#eab308',
-    lethality: 2,
+    lethality: 2, notoriety: 8,
     hasCrew: true,
   },
   {
@@ -1661,7 +1760,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(6, 3, 5, 5, { Armament: 'Basic' }, 4, 4),
     weight: 2,
     color: '#581c87',
-    lethality: 2,
+    lethality: 2, notoriety: 7,
     hasCrew: true,
   },
   {
@@ -1671,7 +1770,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(8, 6, 7, 6, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Basic' }, 5, 5),
     weight: 2,
     color: '#ec4899',
-    lethality: 3,
+    lethality: 3, notoriety: 9,
     hasCrew: true,
   },
   {
@@ -1681,7 +1780,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(9, 5, 9, 8, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5, 5),
     weight: 1,
     color: '#450a0a',
-    lethality: 3,
+    lethality: 3, notoriety: 10,
     hasCrew: true,
   },
   {
@@ -1692,7 +1791,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(9, 7, 8, 7, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
     weight: 1,
     color: '#dc2626',
-    lethality: 2,
+    lethality: 2, notoriety: 10,
     hasCrew: true,
   },
   {
@@ -1703,7 +1802,7 @@ export const RIVAL_ROSTER: NpcDef[] = [
     profile: profile(8, 4, 8, 6, { Armament: 'Advanced', Observation: 'Basic' }, 4, 3),
     weight: 2,
     color: '#4338ca',
-    lethality: 3,
+    lethality: 3, notoriety: 6,
     hasCrew: true,
   },
 ]
@@ -1787,13 +1886,13 @@ export const CREW_SIZE_OPTIONS: WheelOption[] = [
 /** How your crew's average strength compares to your own — peaks one notch below "Equal" since
  * a captain is typically the strongest one aboard, with both extremes deliberately rare. */
 export const CREW_STRENGTH_OPTIONS: WheelOption[] = [
-  opt('Much weaker than you on average', 1, '#7f1d1d'),
-  opt('Weaker than you on average', 5, '#b91c1c'),
-  opt('Slightly weaker than you on average', 12, '#dc2626'),
-  opt('Equal in strength to you on average', 7, '#a16207'),
-  opt('Slightly stronger than you on average', 4, '#15803d'),
-  opt('Stronger than you on average', 2, '#166534'),
-  opt('Much stronger than you on average', 1, '#052e16'),
+  opt('Much weaker than you', 1, '#7f1d1d'),
+  opt('Weaker than you', 5, '#b91c1c'),
+  opt('Slightly weaker than you', 12, '#dc2626'),
+  opt('Equal in strength to you', 7, '#a16207'),
+  opt('Slightly stronger than you', 4, '#15803d'),
+  opt('Stronger than you', 2, '#166534'),
+  opt('Much stronger than you', 1, '#052e16'),
 ]
 
 /** CREW_SIZE_OPTIONS, nudged toward bigger crews by a bloodline's crewSizeBias, if any. */
@@ -1853,6 +1952,12 @@ export function npcStrength(name: string): number {
 /** Looks up a named opponent's lethality (0-3); unknown names default to moderate. */
 export function npcLethality(name: string): number {
   return ALL_NPCS.find((n) => n.name === name)?.lethality ?? 1
+}
+
+/** Looks up a named opponent's world notoriety (0-10); unknown names default to low (an
+ * unnamed nobody, not someone whose defeat would make headlines). */
+export function npcNotoriety(name: string): number {
+  return ALL_NPCS.find((n) => n.name === name)?.notoriety ?? 1
 }
 
 /**
