@@ -193,6 +193,13 @@ export type CharacterState = {
   hubSpinCount: number
   /** Set when the player lands on Immortalize — the run ends here, distinct from death. */
   immortalized?: boolean
+  /** The player-typed name given to an immortalized character — set by submitImmortalName,
+   * read by EndingScreen to personalize the immortalized ending. */
+  immortalName?: string
+  /** Set only while resolving the "cap is full" gauntlet fight (see immortalizeGauntletOutcome) —
+   * the name of the stored immortalized character who gets deleted and replaced by this one if
+   * the gauntlet fight is won. Cleared once submitImmortalName consumes it. */
+  pendingImmortalReplaceName?: string
   causeOfDeath?: string
   eventLog: EventLogEntry[]
 }
@@ -247,6 +254,16 @@ export type EndingNode = {
   id: string
 }
 
-export type StoryNode = WheelNode | EndingNode
+/** The app's one free-text input screen — used only to name a character being immortalized.
+ * Not a wheel: advances via a dedicated store action (submitImmortalName), not applySelection. */
+export type NameInputNode = {
+  type: 'nameInput'
+  id: string
+  question: string
+  maxLength?: number
+  next: string | ((state: CharacterState) => string)
+}
+
+export type StoryNode = WheelNode | NameInputNode | EndingNode
 
 export type StoryGraph = Record<string, StoryNode>

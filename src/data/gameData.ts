@@ -17,6 +17,7 @@ import {
   type Stats,
   type WheelOption,
 } from '../types'
+import { findImmortalNpcDef, immortalsOfAffiliation, toNpcDef } from './immortals'
 
 export const opt = (label: string, weight: number, color: string, flavorText?: string): WheelOption => ({
   label,
@@ -440,7 +441,7 @@ function playerCombatProfile(state: CharacterState): CombatProfile {
 }
 
 function npcCombatProfile(name: string): CombatProfile {
-  const npc = ALL_NPCS.find((n) => n.name === name)
+  const npc = findNpc(name)
   return npc ? combatProfileFrom(npc.profile) : FALLBACK_COMBAT_PROFILE
 }
 
@@ -1412,6 +1413,21 @@ export function marineRosterOptions(state: CharacterState): WheelOption[] {
   return candidates.map((n) => opt(n.name, n.weight, n.color))
 }
 
+/** Same as marineRosterOptions, but also merges in any immortalized Marine whose frozen
+ * marineTier matches the player's current bucket — Marine encounters use a hard 5-way
+ * partition rather than npcOptions' continuous tier-distance decay, so an immortalized Marine
+ * needs its own frozen bucket (see ImmortalizedRecord.marineTier) instead of minTier. */
+export function marineRosterOptionsWithImmortals(state: CharacterState): WheelOption[] {
+  const tier = marineTierForRank(state)
+  const pool: NpcDef[] = [
+    ...MARINE_ROSTERS[tier],
+    ...immortalsOfAffiliation('Marine').filter((r) => r.marineTier === tier).map(toNpcDef),
+  ]
+  const alive = pool.filter((n) => isAvailable(state, n.name))
+  const candidates = alive.length > 0 ? alive : pool
+  return candidates.map((n) => opt(n.name, n.weight, n.color))
+}
+
 export const PIRATE_ROSTER: NpcDef[] = [
   { name: "Alvida's Gang", minTier: 0, profile: profile(0, 0, 0, 0, {}, 0), weight: 4, color: '#7f1d1d', lethality: 1, notoriety: 1 },
   {
@@ -1931,6 +1947,28 @@ export function npcOptions(pool: NpcDef[], state: CharacterState): WheelOption[]
   })
 }
 
+/** PIRATE_ROSTER plus any immortalized Pirates — returns the merged NpcDef[] pool itself
+ * (not pre-built wheel options) so callers like poneglyphTarget can still tier-filter it before
+ * handing it to npcOptions. */
+export function pirateRosterWithImmortals(): NpcDef[] {
+  return [...PIRATE_ROSTER, ...immortalsOfAffiliation('Pirate').map(toNpcDef)]
+}
+
+/** RIVAL_ROSTER plus any immortalized Revolutionaries only — Pirates/Marines already have
+ * their own dedicated pools (pirateRosterWithImmortals / marineRosterOptionsWithImmortals), so
+ * they aren't also folded into the generic rival pool here. */
+export function rivalRosterWithImmortals(): NpcDef[] {
+  return [...RIVAL_ROSTER, ...immortalsOfAffiliation('Revolutionary').map(toNpcDef)]
+}
+
+/** No static roster of canon Revolutionary NPCs exists — this pool is immortalized
+ * Revolutionaries only, so the "Revolutionaries confront you" hub option only ever appears
+ * once at least one exists (see immortalsOfAffiliation('Revolutionary').length > 0 gating in
+ * storyGraph.ts). */
+export function revolutionaryRosterOptions(state: CharacterState): WheelOption[] {
+  return npcOptions(immortalsOfAffiliation('Revolutionary').map(toNpcDef), state)
+}
+
 const ALL_NPCS: NpcDef[] = [
   ...MARINE_TIER_1,
   ...MARINE_TIER_2,
@@ -1942,22 +1980,37 @@ const ALL_NPCS: NpcDef[] = [
   ...RIVAL_ROSTER,
 ]
 
+/** Looks up any opponent by name — a canon roster NPC first, falling back to a persisted
+ * immortalized character (see src/data/immortals.ts). This is the one shared choke point that
+ * lets an immortalized opponent flow through every existing combat/growth/rank formula (all of
+ * which only ever look an opponent up by name) with zero changes to that math. */
+function findNpc(name: string): NpcDef | undefined {
+  return ALL_NPCS.find((n) => n.name === name) ?? findImmortalNpcDef(name)
+}
+
+/** Every canon NPC name across every roster — used to keep a player-typed immortalized-character
+ * name from colliding with one (WeightedWheel resolves a landed option by label match, so a
+ * name shared with a canon NPC would make that NPC's entry always win the lookup). */
+export function allNpcNames(): string[] {
+  return ALL_NPCS.map((n) => n.name)
+}
+
 /** Looks up a named opponent's 1-100 overall-strength rating; unknown names default to a
  * moderate mid-strength value. */
 export function npcStrength(name: string): number {
-  const npc = ALL_NPCS.find((n) => n.name === name)
+  const npc = findNpc(name)
   return npc ? overallStrengthFromProfile(npc.profile) : 30
 }
 
 /** Looks up a named opponent's lethality (0-3); unknown names default to moderate. */
 export function npcLethality(name: string): number {
-  return ALL_NPCS.find((n) => n.name === name)?.lethality ?? 1
+  return findNpc(name)?.lethality ?? 1
 }
 
 /** Looks up a named opponent's world notoriety (0-10); unknown names default to low (an
  * unnamed nobody, not someone whose defeat would make headlines). */
 export function npcNotoriety(name: string): number {
-  return ALL_NPCS.find((n) => n.name === name)?.notoriety ?? 1
+  return findNpc(name)?.notoriety ?? 1
 }
 
 /**

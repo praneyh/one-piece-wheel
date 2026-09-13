@@ -65,7 +65,14 @@ export default function EndingScreen({ character, onRestart }: Props) {
             Immortalized
           </h1>
           <p className="max-w-xs text-base font-semibold text-indigo-200/90">
-            Your legend has been etched into the wheel forever.
+            {character.immortalName ? (
+              <>
+                <span className="text-indigo-100">{character.immortalName}</span>'s legend has been
+                etched into the wheel forever.
+              </>
+            ) : (
+              'Your legend has been etched into the wheel forever.'
+            )}
           </p>
         </>
       ) : (
@@ -79,6 +86,7 @@ export default function EndingScreen({ character, onRestart }: Props) {
       )}
 
       <div className="mt-2 w-full max-w-sm space-y-2 rounded-2xl border border-amber-700/25 bg-neutral-900/80 p-5 text-left text-sm text-neutral-200 shadow-[0_0_0_1px_rgba(232,193,104,0.05)] backdrop-blur">
+        {character.immortalName && <Row label="Name" value={character.immortalName} />}
         <Row label="Affiliation" value={character.affiliation} />
         <Row label="Race" value={character.race} />
         {character.bloodline && <Row label="Bloodline" value={character.bloodline} />}

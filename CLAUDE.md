@@ -2,8 +2,11 @@
 
 A single-page React app that generates a random One Piece character backstory via a
 casino-style spinning wheel walked through a long branching story graph — "what kind of
-pirate/marine/revolutionary would you become." No backend, no persistence beyond the
-in-memory session; deployed statically to GitHub Pages.
+pirate/marine/revolutionary would you become." No backend; deployed statically to GitHub Pages.
+The one piece of persistence is `localStorage`-backed: characters who choose the "Immortalize"
+ending are saved on-device and can be encountered as opponents in future runs — see
+"Immortalized characters" below. Everything else (the current run's `CharacterState`) lives only
+in the in-memory Zustand store and resets on refresh/restart.
 
 Page `<title>`: "One Piece Character Generator". Repo/base path: `one-piece-wheel`.
 
@@ -30,6 +33,10 @@ to actually shrink the repo, not just delete-going-forward).
 
 ## Architecture
 
+Five source files carry the app: `types.ts` (data model), `store.ts` (Zustand state + the two
+ways to advance it), `data/gameData.ts` (rules/odds/rosters), `data/storyGraph.ts` (the node
+graph), `data/immortals.ts` (the one persistence layer — see "Immortalized characters" below).
+
 ### Data flow
 `src/store.ts` (Zustand) is the only source of mutable app state: `currentNodeId`, `character`
 (a `CharacterState`), and `visitId`. `visitId` increments on **every** navigation, including a
@@ -51,13 +58,16 @@ Otherwise resolves `next` (string or function of state+label).
   based on race, bloodline, rank, alive/dead NPCs, etc.). `onSelect` mutates state on landing.
   `next` resolves the following node id.
 - **`ending`** — terminal screen, no further navigation except the restart button.
+- **`nameInput`** — the app's one free-text screen, used only to name a character being
+  immortalized (`immortalizeNamePrompt`; see "Immortalized characters" below). No `options`/
+  `onSelect` — advances via a dedicated store action (`submitImmortalName`), not
+  `applySelection`, since there's no wheel option being picked.
 
 There used to be a third node type, `recap` — a full-screen "achievement" interstitial (crew
 size milestones, all-Haki-maxed, Poneglyph count) that auto-advanced after 3.2s or on tap. It
 was deliberately removed (along with `RecapNode`, `RecapScreen.tsx`, and the recap-handling
 branches in `App.tsx`) — the game no longer shows any popup/interstitial screens between wheel
-spins. **Don't reintroduce a recap-style interstitial** without an explicit ask; every node
-should be a `wheel` or the terminal `ending`.
+spins. **Don't reintroduce a recap-style interstitial** without an explicit ask.
 
 `resolveOptions(node, state)` is the one place that calls `node.options` whether it's static or
 a function — always go through this helper rather than accessing `node.options` directly.
@@ -83,13 +93,24 @@ a function — always go through this helper rather than accessing `node.options
 - **`QuestionScreen.tsx`** — thin wrapper: shows question text + `node.icon`, delays calling
   `onResolved` by 1300ms after landing so the player can read the result and `flavorText` before
   advancing.
+- **`NameInputScreen.tsx`** — the one free-text screen (`node.type === 'nameInput'`). Controlled
+  `<input>`, trimmed + non-empty validation, `maxLength` from the node (24 for
+  `immortalizeNamePrompt` — comfortably inside `WeightedWheel`'s ~37-char font floor, since this
+  name will later render as a wedge label). Calls `onSubmit(name)`, wired in `App.tsx` to the
+  store's `submitImmortalName`, not `applySelection`.
 - **`EndingScreen.tsx`** — three "win" states keyed by `character.affiliation` (Pirate → "King of
   the Pirates", Marine → "Fleet Admiral", Revolutionary → "Commander-in-Chief"), plus a death
   screen (`causeOfDeath` set) and an "Immortalized" screen (`immortalized` set) — checked in that
-  priority order (death > immortalized > win). Shows a full stat recap + restart button.
+  priority order (death > immortalized > win). The immortalized branch personalizes its flavor
+  text with `character.immortalName` when set. Shows a full stat recap + restart button.
 - **`StatsPanel.tsx`** — slide-out drawer (📊 button, top-right, present on every non-ending
   screen), viewable at any time mid-run. Stat bars use `statTierIndex(key, value) / (ladder
   length - 1)` for the fill percentage.
+- **`ImmortalsPanel.tsx`** — same slide-out-drawer shell as `StatsPanel` (🗿 button, sits next to
+  it), but shows every persisted `ImmortalizedRecord` (`loadImmortals()`, called fresh in the
+  render body — no caching, cheap enough, and re-renders naturally whenever `App.tsx` does)
+  rather than the live character. Each card shows name, race/bloodline/rank, the four core
+  stats, Haki, mastery, and an accent bar in the record's own `color`.
 
 ## `src/types.ts` — the data model
 
@@ -118,6 +139,11 @@ and *why* they exist (most are self-explanatory from the name):
   Needed because `onSelect` sets `devilFruit` for *both* a first-time bite and a second-fruit
   bite by the time `next` inspects post-`onSelect` state, so this flag is the only way to tell
   which case is active.
+- `immortalName` — permanent (not "pending"), set once by `submitImmortalName` when a character
+  is immortalized; read by `EndingScreen` to personalize the ending.
+- `pendingImmortalReplaceName` — only set while resolving the "hall is full" gauntlet fight (see
+  "Immortalized characters" below); carries the name of the existing legend who'll be deleted and
+  replaced if the gauntlet is won.
 - Four core stats live on separate tier ladders in `types.ts`:
   - `POWER_TIERS` / `DURABILITY_TIERS` (same 14-rung ladder, Normal Human → Universal Level)
   - `SPEED_TIERS` (13 rungs, Normal Human → Infinite Speed, includes FTL)
@@ -126,7 +152,7 @@ and *why* they exist (most are self-explanatory from the name):
     how race/bloodline stat mods are applied as guaranteed floors on the wheel itself (see below)
     rather than as an after-the-fact adjustment.
 
-## `src/data/gameData.ts` — rules, odds, and rosters (~1970 lines)
+## `src/data/gameData.ts` — rules, odds, and rosters (~2100 lines)
 
 `opt(label, weight, color, flavorText?)` is the universal `WheelOption` builder used everywhere.
 
@@ -322,6 +348,12 @@ axis sat at its cap is ~90/100 overall strength.
   (ties the power ceiling), Shanks (top tier despite no Devil Fruit — leans entirely on
   stats/Haki/mastery), plus at least one Elbaf Giant antagonist.
 
+**Every opponent lookup (`npcCombatProfile`, `npcStrength`, `npcLethality`, `npcNotoriety`) goes
+through a shared `findNpc(name)`**: `ALL_NPCS.find(...)` first, falling back to
+`findImmortalNpcDef(name)` from `src/data/immortals.ts` — this is what lets a persisted
+immortalized character flow through every existing combat/growth/rank formula with zero changes
+to that math. See "Immortalized characters" below for the full system.
+
 `isAvailable(state, name)` excludes `deceased` and `recruited` names from every roster, and —
 via `CREW_ORIGIN_SELF_ENTRIES` — also excludes any roster entry that represents the player's own
 starting crew (`crewOrigin`, set from `MAJOR_PIRATE_CREWS`) when they began the run as part of
@@ -368,6 +400,75 @@ cheap talk (a dockside tavern rumor, "a local legend") is common to land on but 
 negative modifier. The chosen location is stashed in `pendingPoneglyphLocation` between the two
 wheels and cleared again in `poneglyphSearchResult`'s `onSelect`.
 
+### Immortalized characters — local persistence (`src/data/immortals.ts`)
+Choosing `Immortalize` on a hub wheel used to just be a flavor ending. Now it permanently saves
+the character to `localStorage` on that device (key `one-piece-wheel:immortals`) as an
+`ImmortalizedRecord`, so it survives refreshes and can be encountered as an opponent in *future*
+runs — a Marine shows up in Marine-facing pools, a Pirate in Pirate-facing pools, a Revolutionary
+via a dedicated new encounter plus the shared rival pool. This is the **only** persistence in the
+app — everything else lives in the in-memory Zustand store and resets on `restart()`.
+
+**`ImmortalizedRecord`** freezes everything the fight-math system needs at the moment of
+immortalization: `profile: StrengthProfile` (picked directly off the live character's
+`stats`/`haki`/`fightingMastery`/`devilFruitMastery`/`secondDevilFruitMastery` — same shape, no
+conversion), `minTier` (`tierIndex(state)`, 0-7, feeds `npcOptions`' continuous decay for the
+Pirate/Rival/Revolutionary pools), `marineTier` (`marineTierForRank(state)`, 1-5 — Marine
+encounters use a *hard bucket* rather than continuous decay, so this needs its own frozen value,
+separate from `minTier`), `notoriety` (`clamp(0,10, round(5 + (minTier/7)*5))` — floor of 5 since
+reaching Immortalize is inherently legendary, up to 10 at max rank), `lethality`
+(`clamp(0,3, round(overallStrengthFromProfile(profile)/100*3))`), `hasCrew`
+(`crew.length > 0 || Boolean(crewOrigin)`), and a `color` cycled from a small fixed palette
+(`immortalColorForIndex`) since immortalized characters don't have a hand-authored one like canon
+NPCs do.
+
+**Wiring into existing pools** (`gameData.ts`): `pirateRosterWithImmortals()` and
+`rivalRosterWithImmortals()` return a merged `NpcDef[]` (`[...PIRATE_ROSTER/RIVAL_ROSTER,
+...immortalsOfAffiliation(...).map(toNpcDef)]`) fed through the existing `npcOptions` — note
+**only immortalized Revolutionaries** get folded into the rival pool; immortalized Pirates/
+Marines already have their own dedicated pools and aren't double-injected there.
+`marineRosterOptionsWithImmortals(state)` reimplements `marineRosterOptions`'s body, merging in
+`immortalsOfAffiliation('Marine').filter(r => r.marineTier === marineTierForRank(state))` before
+the existing "fall back to the full pool if everyone's dead" quirk — preserved faithfully, not
+"fixed" as a drive-by change. `revolutionaryRosterOptions(state)` has no static base roster at
+all (no canon Revolutionary NPCs exist) — it's immortalized Revolutionaries only.
+
+**New hub option "Revolutionaries confront you"** — added to `hubPirate` and `hubMarine` only
+(not `hubRevolutionary`), conditionally pushed only when
+`immortalsOfAffiliation('Revolutionary').length > 0` (mirrors the existing `if (state.weapon)
+options.push(...)` conditional pattern), routing to the new `revolutionaryEncounter` node, which
+reuses the exact same shared `marineTactic → marineOutcome → marineAftermath`/`marineDeathRoll`
+chain already shared by `marineEncounter`, `liberateIsland`, and `rivalEncounter` — zero new
+tactic/outcome/aftermath nodes needed.
+
+**The Immortalize flow itself**: each hub's `next` for `label === 'Immortalize'` is now
+`isAtCap() ? 'immortalizeGauntletOpponent' : 'immortalizeNamePrompt'` (cap = `IMMORTALS_CAP = 25`,
+in `immortals.ts`).
+- **Under the cap**: routes straight to `immortalizeNamePrompt` (the `nameInput` node) —
+  `submitImmortalName` builds the record, calls `addImmortal`, sets `immortalized: true` +
+  `immortalName`, and jumps `currentNodeId` to `'ending'` directly (bypassing `applySelection`
+  entirely, since no wheel option is being picked).
+- **At the cap**: `immortalizeGauntletOpponent` (equal-weight wheel of every stored immortal) →
+  `immortalizeGauntletTactic` (standard `TACTIC_OPTIONS`) → `immortalizeGauntletOutcome`
+  (`fightOddsOptions`). **This fight is deliberately all-or-nothing — no `survivalOdds` roll,
+  unlike every other fight in the game**: losing sets `causeOfDeath` directly (fatal, full stop);
+  winning sets `pendingImmortalReplaceName` and routes to `immortalizeNamePrompt`, where
+  `submitImmortalName` calls `replaceImmortal(oldName, record)` instead of `addImmortal` —
+  deleting the defeated legend and inserting the new one in the same slot. This is an
+  intentional, explicit divergence from the "every fight routes through the shared
+  rank/growth-check and loss-consequence chains" convention elsewhere in this file — don't
+  "fix" it back toward consistency without asking.
+
+**Permanent removal**: killing an immortalized opponent (`'You kill them'` in `applyAftermath`)
+calls `removeImmortalByName` — see the `applyAftermath` note above. This is genuinely permanent
+(deletes from `localStorage`), unlike the per-run `deceased` set which resets every `restart()`.
+
+**Name collisions**: `WeightedWheel`'s `spin()` resolves the landed option by
+`wedges.find(w => w.label === option.label)` — a duplicate label in the same pool would silently
+corrupt which outcome fires. `submitImmortalName` (in `store.ts`) dedupes a player-typed name
+against both `allNpcNames()` (every canon NPC, exported from `gameData.ts`) and other stored
+immortals, silently appending a Roman-numeral suffix (`uniqueImmortalName`, " II", " III", ...)
+on collision rather than blocking submission.
+
 ### World events
 `WORLD_EVENT_REACTIONS` is a per-event reaction map (6 named events: Yonko-vs-Marines clash, new
 island rises, Ancient Weapon stirs, rival crew declares war, Reverie, storm wrecks the Grand
@@ -375,7 +476,7 @@ Line) with `GENERIC_EVENT_REACTIONS` as a fallback for anything else. `RISKY_REA
 storyGraph.ts) is a fixed set of specific reaction labels that escalate into a full high-stakes
 encounter chain rather than resolving as flavor-only.
 
-## `src/data/storyGraph.ts` — the ~90-node story graph (~1700 lines)
+## `src/data/storyGraph.ts` — the ~95-node story graph (~1800 lines)
 
 `START_NODE_ID = 'affiliation'`. Helper functions worth knowing before editing nodes:
 - `hubIdFor(state)` → `` `hub${state.affiliation}` `` — the return address for most side-quest
@@ -385,14 +486,20 @@ encounter chain rather than resolving as flavor-only.
   like a fight that didn't happen. `rankIncreaseCheck`/`rankIncreaseTarget` are shared by both
   paths the same way.
 - `growthLoopNext(state)` / `growthCheckNext(state, label)` — shared routing for the growth-pick
-  batch loop (continue picking while `pendingStatRolls > 0`, detour to a Haki-mastery recap if
-  all three Haki types just hit Advanced, otherwise return to `pendingReturnNode ?? hubIdFor`).
+  batch loop (continue picking while `pendingStatRolls > 0`, otherwise return to
+  `pendingReturnNode ?? hubIdFor`).
 - `applyWorldEventBoost(state, options)` — mutates a hub options array in place to multiply the
   'World Event' option's weight by a bloodline's `worldEventWeightMultiplier` (only Monkey D.
   Family has one, ×3). Mutating in place matches the pattern the other conditional hub-option
   pushes already use in the hub node definitions.
 - `applyAftermath(state, label)` — appends the defeated foe to `defeatedOpponents`, and if the
-  player chose "You kill them," also adds them to `deceased`.
+  player chose "You kill them," also adds them to `deceased`. **This is the one deliberate
+  exception to every aftermath/`onSelect` function in this file being a pure state transform**:
+  the kill branch also calls `removeImmortalByName(foe)` (a `localStorage` side effect) — see
+  "Immortalized characters" below. Don't "purify" this away; it's the single shared choke point
+  both `marineAftermath` and `pirateFightAftermath` call, and `'You kill them'` appears nowhere
+  else in the file (so `revolutionaryEncounter`/`rivalEncounter`, which route through the shared
+  `marineAftermath`, inherit the same permanent-removal behavior for free).
 - `lossConsequenceOptions`/`applyLossConsequence` — on a lost-but-survived fight, "You lose an
   ally" only appears as an option if `state.crew.length > 0`, and randomly drops one crewmate
   into `deceased` if chosen.
@@ -441,11 +548,17 @@ encounter chain rather than resolving as flavor-only.
    Mastery'` appears on the wheel at all — true if *any* known style (not just the primary) has
    room to grow, so `growableCount`'s batch-size wheel stays accurate for a multi-style
    character too.
-7. **Ending** (`ending` node, `type: 'ending'`) is reached three ways: death
-   (`causeOfDeath` set, overrides everything), `Immortalize` picked on a hub wheel
-   (`immortalized: true`), or — implicitly — there's no explicit "win" trigger node; the
-   `EndingScreen` component's non-death/non-immortalized branch is the default "you made it"
-   state whenever the ending node is reached any other way.
+7. **Immortalize** (see "Immortalized characters" above for the full system) — picking it on a
+   hub wheel routes to `immortalizeNamePrompt` (a `nameInput` node) directly, or first through a
+   `immortalizeGauntletOpponent → …Tactic → …Outcome` fight against an existing legend if the
+   local 25-character cap is full. `submitImmortalName` (a dedicated store action, not
+   `applySelection`) persists the record and jumps straight to `'ending'`.
+8. **Ending** (`ending` node, `type: 'ending'`) is reached three ways: death
+   (`causeOfDeath` set, overrides everything — including a lost Immortalize gauntlet fight),
+   `Immortalize` successfully completed (`immortalized: true`, set by `submitImmortalName`), or —
+   implicitly — there's no explicit "win" trigger node; the `EndingScreen` component's
+   non-death/non-immortalized branch is the default "you made it" state whenever the ending node
+   is reached any other way.
 
 ## Working conventions for this codebase
 
@@ -469,6 +582,14 @@ encounter chain rather than resolving as flavor-only.
 - Any node whose `next` can route to `'ending'` outside of the death-override path should be
   double-checked against `applySelection`'s override in `store.ts` — death always wins regardless
   of what a node's own `next` computes.
+- A new roster entry that should be encounterable needs to flow through `findNpc` (canon NPC or
+  persisted immortalized character) — don't add a new independent lookup path that only checks
+  `ALL_NPCS` directly, or immortalized opponents will silently fall back to
+  `FALLBACK_COMBAT_PROFILE`/default notoriety instead of their real stats.
+- `localStorage` access belongs in `src/data/immortals.ts` only — don't call `localStorage`
+  directly from `gameData.ts`/`storyGraph.ts`/`store.ts`; go through its exported functions so
+  the try/catch-wrapped read/write behavior (Safari private mode, quota errors, etc.) stays in
+  one place.
 
 ---
 *This file is maintained by Claude across sessions — after any non-trivial change to

@@ -3,16 +3,20 @@ import { resolveOptions } from './types'
 import { STORY_GRAPH } from './data/storyGraph'
 import { useStoryStore } from './store'
 import QuestionScreen from './components/QuestionScreen'
+import NameInputScreen from './components/NameInputScreen'
 import EndingScreen from './components/EndingScreen'
 import StatsPanel from './components/StatsPanel'
+import ImmortalsPanel from './components/ImmortalsPanel'
 
 export default function App() {
   const currentNodeId = useStoryStore((s) => s.currentNodeId)
   const visitId = useStoryStore((s) => s.visitId)
   const character = useStoryStore((s) => s.character)
   const applySelection = useStoryStore((s) => s.applySelection)
+  const submitImmortalName = useStoryStore((s) => s.submitImmortalName)
   const restart = useStoryStore((s) => s.restart)
   const [statsOpen, setStatsOpen] = useState(false)
+  const [immortalsOpen, setImmortalsOpen] = useState(false)
 
   const node = STORY_GRAPH[currentNodeId]
 
@@ -26,13 +30,22 @@ export default function App() {
             <span className="font-display flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.2em] text-amber-300/80">
               <span className="text-sm">⚓</span> One Piece Wheel
             </span>
-            <button
-              type="button"
-              onClick={() => setStatsOpen(true)}
-              className="rounded-full border border-amber-700/40 bg-neutral-900/90 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-300 transition hover:border-amber-500/60 hover:text-amber-200"
-            >
-              📊 Stats
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setImmortalsOpen(true)}
+                className="rounded-full border border-amber-700/40 bg-neutral-900/90 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-300 transition hover:border-amber-500/60 hover:text-amber-200"
+              >
+                Legends
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatsOpen(true)}
+                className="rounded-full border border-amber-700/40 bg-neutral-900/90 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-300 transition hover:border-amber-500/60 hover:text-amber-200"
+              >
+                📊 Stats
+              </button>
+            </div>
           </div>
         )}
 
@@ -45,10 +58,19 @@ export default function App() {
           />
         )}
 
+        {node.type === 'nameInput' && (
+          <NameInputScreen
+            key={`${node.id}:${visitId}`}
+            node={node}
+            onSubmit={(name) => submitImmortalName(name)}
+          />
+        )}
+
         {node.type === 'ending' && <EndingScreen character={character} onRestart={restart} />}
       </div>
 
       <StatsPanel character={character} open={statsOpen} onClose={() => setStatsOpen(false)} />
+      <ImmortalsPanel open={immortalsOpen} onClose={() => setImmortalsOpen(false)} />
     </div>
   )
 }

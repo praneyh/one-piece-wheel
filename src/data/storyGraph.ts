@@ -23,9 +23,7 @@ import {
   MAJOR_PIRATE_CREWS,
   MASTERY_LEVEL_ORDER,
   MASTERY_LEVELS,
-  PIRATE_ROSTER,
   RACES,
-  RIVAL_ROSTER,
   STAT_OPTIONS,
   STAT_TIER_OPTIONS,
   TACTIC_OPTIONS,
@@ -51,11 +49,12 @@ import {
   higherRankOptions,
   higherStatOptions,
   immortalizeOption,
-  marineRosterOptions,
+  marineRosterOptionsWithImmortals,
   masteryGrowable,
   meetsHakiFloor,
   npcOptions,
   opt,
+  pirateRosterWithImmortals,
   poneglyphFindOdds,
   poneglyphLocationModifier,
   PONEGLYPH_SEARCH_LOCATIONS,
@@ -63,10 +62,13 @@ import {
   rankIncreaseOdds,
   rankLadderFor,
   rankPressureWeight,
+  revolutionaryRosterOptions,
+  rivalRosterWithImmortals,
   secondDevilFruitSurvivalOdds,
   survivalOdds,
   tacticBonus,
 } from './gameData'
+import { immortalsOfAffiliation, isAtCap, loadImmortals, removeImmortalByName } from './immortals'
 
 export const START_NODE_ID = 'affiliation'
 
@@ -180,10 +182,16 @@ function setLastCrewmateStrength(state: CharacterState, label: string): Characte
   return { ...state, crew }
 }
 
+// Deliberate one-off exception to every other aftermath/onSelect function in this file being a
+// pure state transform: killing an immortalized character has to permanently delete them from
+// localStorage (not just this run's `deceased` set, which resets on restart), and this is the
+// single shared choke point every kill passes through (marineAftermath and pirateFightAftermath
+// both call it, and nothing else in the file sets 'You kill them'). Don't "purify" this away.
 function applyAftermath(state: CharacterState, label: string): CharacterState {
   const foe = state.lastOpponent ?? 'an opponent'
   const withDefeat = { ...state, defeatedOpponents: [...state.defeatedOpponents, foe] }
   if (label === 'You kill them') {
+    removeImmortalByName(foe)
     return { ...withDefeat, deceased: new Set(withDefeat.deceased).add(foe) }
   }
   return withDefeat
@@ -591,6 +599,9 @@ export const STORY_GRAPH: StoryGraph = {
       if (!isAtMaxRank(state)) {
         options.push(opt('Get a new bounty', rankPressureWeight(state, 3), '#0d9488'))
       }
+      if (immortalsOfAffiliation('Revolutionary').length > 0) {
+        options.push(opt('Revolutionaries confront you', 3, '#166534'))
+      }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
       return options
@@ -604,7 +615,7 @@ export const STORY_GRAPH: StoryGraph = {
         : {}),
     }),
     next: (state, label) => {
-      if (label === 'Immortalize') return 'ending'
+      if (label === 'Immortalize') return isAtCap() ? 'immortalizeGauntletOpponent' : 'immortalizeNamePrompt'
       // How you train is flavor only: either route lands on the same real growth roll.
       if (label === 'Train') return 'growthStronger'
       // A legendary master's teaching always pays off — no separate flavor step needed.
@@ -621,6 +632,7 @@ export const STORY_GRAPH: StoryGraph = {
         'Find a Devil Fruit': 'devilFruitEncounter',
         'You discover ancient ruins': 'ruinsExploration',
         'A rival marks you for death': 'rivalEncounter',
+        'Revolutionaries confront you': 'revolutionaryEncounter',
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Word of your exploits spreads': 'reputationSpread',
         'Get a new bounty': 'rankJump',
@@ -655,6 +667,9 @@ export const STORY_GRAPH: StoryGraph = {
       if (!isAtMaxRank(state)) {
         options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
       }
+      if (immortalsOfAffiliation('Revolutionary').length > 0) {
+        options.push(opt('Revolutionaries confront you', 3, '#166534'))
+      }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
       return options
@@ -668,7 +683,7 @@ export const STORY_GRAPH: StoryGraph = {
         : {}),
     }),
     next: (state, label) => {
-      if (label === 'Immortalize') return 'ending'
+      if (label === 'Immortalize') return isAtCap() ? 'immortalizeGauntletOpponent' : 'immortalizeNamePrompt'
       // How you train is flavor only: either route lands on the same real growth roll.
       if (label === 'Train') return 'growthStronger'
       // A legendary master's teaching always pays off — no separate flavor step needed.
@@ -685,6 +700,7 @@ export const STORY_GRAPH: StoryGraph = {
         'Find a Devil Fruit': 'devilFruitEncounter',
         'You discover ancient ruins': 'ruinsExploration',
         'An old enemy resurfaces': 'rivalEncounter',
+        'Revolutionaries confront you': 'revolutionaryEncounter',
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Your service is recognized': 'reputationSpread',
         'Get promoted': 'rankJump',
@@ -732,7 +748,7 @@ export const STORY_GRAPH: StoryGraph = {
         : {}),
     }),
     next: (state, label) => {
-      if (label === 'Immortalize') return 'ending'
+      if (label === 'Immortalize') return isAtCap() ? 'immortalizeGauntletOpponent' : 'immortalizeNamePrompt'
       // How you train is flavor only: either route lands on the same real growth roll.
       if (label === 'Train') return 'growthStronger'
       // A legendary master's teaching always pays off — no separate flavor step needed.
@@ -755,6 +771,68 @@ export const STORY_GRAPH: StoryGraph = {
       }
       return routes[label] ?? 'hubRevolutionary'
     },
+  },
+
+  // ---- immortalize: name prompt, and the "hall is full" gauntlet fight --------
+  // A character who chooses Immortalize either names themselves directly (immortalizeNamePrompt,
+  // the app's one free-text screen — see NameInputNode/submitImmortalName) or, once the local
+  // 25-character cap is reached, first has to beat an existing immortalized legend for their
+  // spot. That gauntlet fight is deliberately all-or-nothing (no survivalOdds roll, unlike every
+  // other fight in the game): losing is simply fatal, winning permanently replaces the defeated
+  // legend (see submitImmortalName's use of pendingImmortalReplaceName).
+  immortalizeNamePrompt: {
+    type: 'nameInput',
+    id: 'immortalizeNamePrompt',
+    question: 'Name the legend you leave behind.',
+    maxLength: 24,
+    next: 'ending',
+  },
+
+  immortalizeGauntletOpponent: {
+    type: 'wheel',
+    id: 'immortalizeGauntletOpponent',
+    category: 'Immortalized',
+    question: 'The hall of legends is full. Who do you have to overcome?',
+    icon: '🗿',
+    options: () => loadImmortals().map((r) => opt(r.name, 1, r.color)),
+    onSelect: (state, label) => ({ ...state, lastOpponent: label }),
+    next: 'immortalizeGauntletTactic',
+  },
+
+  immortalizeGauntletTactic: {
+    type: 'wheel',
+    id: 'immortalizeGauntletTactic',
+    category: 'Immortalized',
+    question: 'How do you approach the fight?',
+    icon: '🗡️',
+    options: (state) =>
+      TACTIC_OPTIONS.filter(
+        (o) =>
+          (o.label !== 'Use your Devil Fruit' || Boolean(state.devilFruit)) &&
+          (o.label !== 'Call for backup' || state.crew.length > 0),
+      ),
+    onSelect: (state, label) => ({ ...state, pendingTacticBonus: tacticBonus(label) }),
+    next: 'immortalizeGauntletOutcome',
+  },
+
+  immortalizeGauntletOutcome: {
+    type: 'wheel',
+    id: 'immortalizeGauntletOutcome',
+    category: 'Immortalized',
+    question: 'Do you overcome them?',
+    icon: '⚔️',
+    options: (state) =>
+      fightOddsOptions(
+        state,
+        state.lastOpponent ?? '',
+        'You strike down the legend and claim their place among the immortals.',
+        'They prove why they earned their legend — and it costs you everything.',
+      ),
+    onSelect: (state, label) =>
+      label === 'Yes'
+        ? { ...state, pendingImmortalReplaceName: state.lastOpponent }
+        : { ...state, causeOfDeath: `${state.lastOpponent ?? 'They'} prove why they earned their legend.` },
+    next: (state, label) => (label === 'Yes' ? 'immortalizeNamePrompt' : hubIdFor(state)),
   },
 
   // ---- world event -----------------------------------------------------
@@ -883,7 +961,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Pirate Encounter',
     question: 'Who do you run into?',
     icon: '🏴‍☠️',
-    options: (state) => npcOptions(PIRATE_ROSTER, state),
+    options: (state) => npcOptions(pirateRosterWithImmortals(), state),
     // Sets both lastMet (for a possible recruit) and lastOpponent (for a possible fight,
     // reusing the same combat chain the Marine faction's pirate-hunting uses).
     onSelect: (state, label) => ({ ...state, lastMet: label, lastOpponent: label }),
@@ -997,7 +1075,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Road Poneglyph',
     question: 'Who do you steal from?',
     icon: '🗿',
-    options: (state) => npcOptions(PIRATE_ROSTER.filter((n) => n.minTier >= 3), state),
+    options: (state) => npcOptions(pirateRosterWithImmortals().filter((n) => n.minTier >= 3), state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'poneglyphTactic',
   },
@@ -1100,7 +1178,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Marines',
     question: 'Which Marine?',
     icon: '⚓',
-    options: (state) => marineRosterOptions(state),
+    options: (state) => marineRosterOptionsWithImmortals(state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'marineTactic',
   },
@@ -1113,7 +1191,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Revolutionary',
     question: 'Who holds the island?',
     icon: '🌋',
-    options: (state) => marineRosterOptions(state),
+    options: (state) => marineRosterOptionsWithImmortals(state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'marineTactic',
   },
@@ -1193,7 +1271,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Pirates',
     question: 'Who do you face?',
     icon: '🏴‍☠️',
-    options: (state) => npcOptions(PIRATE_ROSTER, state),
+    options: (state) => npcOptions(pirateRosterWithImmortals(), state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'pirateFightTactic',
   },
@@ -1360,7 +1438,23 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Rival',
     question: 'Who confronts you?',
     icon: '⚔️',
-    options: (state) => npcOptions(RIVAL_ROSTER, state),
+    options: (state) => npcOptions(rivalRosterWithImmortals(), state),
+    onSelect: (state, label) => ({ ...state, lastOpponent: label }),
+    next: 'marineTactic',
+  },
+
+  // No canon roster of Revolutionary NPCs exists — this encounter only ever draws from
+  // immortalized Revolutionaries, which is why the hub option that routes here only appears
+  // once at least one exists (see the hubPirate/hubMarine option-list builders below). Reuses
+  // the same shared marineTactic/marineOutcome/marineAftermath chain as marineEncounter,
+  // liberateIsland, and rivalEncounter — no new tactic/outcome/aftermath nodes needed.
+  revolutionaryEncounter: {
+    type: 'wheel',
+    id: 'revolutionaryEncounter',
+    category: 'Revolutionary',
+    question: 'Which Revolutionary?',
+    icon: '✊',
+    options: (state) => revolutionaryRosterOptions(state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'marineTactic',
   },
