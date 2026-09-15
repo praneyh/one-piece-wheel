@@ -28,7 +28,6 @@ import {
   STAT_TIER_OPTIONS,
   TACTIC_OPTIONS,
   WORLD_EVENT_REACTIONS,
-  WORLD_EVENT_THREATS,
   bloodlineCheckOdds,
   bloodlineDef,
   bloodlineOptions,
@@ -67,8 +66,9 @@ import {
   secondDevilFruitSurvivalOdds,
   survivalOdds,
   tacticBonus,
+  worldEventDangerPool,
 } from './gameData'
-import { immortalsOfAffiliation, isAtCap, loadImmortals, removeImmortalByName } from './immortals'
+import { isAtCap, loadImmortals, removeImmortalByName } from './immortals'
 
 export const START_NODE_ID = 'affiliation'
 
@@ -129,20 +129,35 @@ function growthCheckIdFor(state: CharacterState): string {
   return state.lastOpponent ? 'growthCheck' : 'growthCheckGeneric'
 }
 
-// World-event reactions that escalate into a full high-stakes encounter chain.
-const RISKY_REACTIONS = new Set([
-  'Join the Yonko',
-  'Join the Marines',
-  'Explore it immediately',
-  'Claim it for your flag',
-  'Seek it out',
-  'Meet them head-on',
-  'Set a trap',
-  'Try to crash it',
-  'Use the distraction to your advantage',
-  'Help stranded sailors',
-  'Loot the wreckage',
-])
+/** Every path into the shared post-fight rank/growth sequence should route through this instead
+ * of the literal 'rankIncreaseCheck' — skips straight to the growth check once there's nowhere
+ * higher to climb, since "does your reputation grow?" is a meaningless question at max rank. */
+function rankIncreaseCheckIdFor(state: CharacterState): string {
+  return isAtMaxRank(state) ? growthCheckIdFor(state) : 'rankIncreaseCheck'
+}
+
+// Every world-event reaction that escalates beyond flavor text routes to its own node here,
+// hand-picked per reaction rather than funneling everything into one generic encounter — a
+// storm-rescue attempt shouldn't share a consequence chain with crashing a Reverie. A reaction
+// with no entry here is flavor-only and returns straight to the hub (see worldEventReaction).
+// 'Join the Yonko'/'Join the Marines'/'Seek it out'/'Try to crash it'/'Loot the wreckage' all
+// route to the shared worldEventDanger — see WORLD_EVENT_DANGER_POOL in gameData.ts for how
+// each of those gets its own curated opponent pool despite sharing that one node.
+const WORLD_EVENT_REACTION_ROUTES: Record<string, string> = {
+  'Join the Yonko': 'worldEventDanger',
+  'Join the Marines': 'worldEventDanger',
+  'Explore it immediately': 'worldEventIslandDiscovery',
+  'Claim it for your flag': 'rivalEncounter',
+  'Seek it out': 'worldEventDanger',
+  'Meet them head-on': 'rivalEncounter',
+  'Set a trap': 'worldEventRivalTrap',
+  'Try to negotiate peace': 'worldEventNegotiate',
+  'Try to crash it': 'worldEventDanger',
+  'Use the distraction to your advantage': 'worldEventReverieHeist',
+  'Help stranded sailors': 'worldEventStormRescue',
+  'Loot the wreckage': 'worldEventDanger',
+  'Ride out the storm': 'worldEventStormRideOut',
+}
 
 function pickMissingPoneglyph(state: CharacterState): PoneglyphLocation | undefined {
   const missing = ALL_PONEGLYPHS.filter((p) => !state.poneglyphsCollected.has(p))
@@ -591,6 +606,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Find a Devil Fruit', 2, '#7c3aed'),
         opt('You discover ancient ruins', 3, '#78350f'),
         opt('A rival marks you for death', 3, '#450a0a'),
+        opt('Revolutionaries confront you', 3, '#166534'),
         opt('A legendary master offers to train you', 2, '#facc15'),
         opt('Word of your exploits spreads', 3, '#0d9488'),
       ]
@@ -598,9 +614,6 @@ export const STORY_GRAPH: StoryGraph = {
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get a new bounty', rankPressureWeight(state, 3), '#0d9488'))
-      }
-      if (immortalsOfAffiliation('Revolutionary').length > 0) {
-        options.push(opt('Revolutionaries confront you', 3, '#166534'))
       }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
@@ -659,6 +672,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Find a Devil Fruit', 2, '#7c3aed'),
         opt('You discover ancient ruins', 3, '#78350f'),
         opt('An old enemy resurfaces', 3, '#450a0a'),
+        opt('Revolutionaries confront you', 3, '#166534'),
         opt('A legendary master offers to train you', 2, '#facc15'),
         opt('Your service is recognized', 3, '#0d9488'),
       ]
@@ -666,9 +680,6 @@ export const STORY_GRAPH: StoryGraph = {
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
-      }
-      if (immortalsOfAffiliation('Revolutionary').length > 0) {
-        options.push(opt('Revolutionaries confront you', 3, '#166534'))
       }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
@@ -860,19 +871,23 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'What do you do?',
     icon: '🌍',
     options: (state) => WORLD_EVENT_REACTIONS[state.lastWorldEvent ?? ''] ?? GENERIC_EVENT_REACTIONS,
-    next: (state, label) => (RISKY_REACTIONS.has(label) ? 'worldEventDanger' : hubIdFor(state)),
+    onSelect: (state, label) => ({ ...state, lastWorldEventReaction: label }),
+    next: (state, label) => WORLD_EVENT_REACTION_ROUTES[label] ?? hubIdFor(state),
   },
 
-  // World events flagged risky escalate into a full high-stakes encounter: a serious threat,
-  // a tactical choice, a win/lose roll, and — on a win — a big one-off reward, or on a loss,
-  // a real chance the story ends here.
+  // The handful of reactions that escalate into a full "epic confrontation" — a real threat,
+  // a tactical choice, a win/lose roll, and (on a win) a big one-off reward, or (on a loss) a
+  // real chance the story ends here. Which opponent pool shows up is picked by
+  // worldEventDangerPool(lastWorldEventReaction) in gameData.ts — a Yonko clash, an Ancient
+  // Weapon, a crashed Reverie, and looted wreckage each get their own curated pool rather than
+  // all sharing the full WORLD_EVENT_THREATS roster.
   worldEventDanger: {
     type: 'wheel',
     id: 'worldEventDanger',
     category: 'World Event',
     question: 'What do you face?',
     icon: '⚡',
-    options: (state) => npcOptions(WORLD_EVENT_THREATS, state),
+    options: (state) => npcOptions(worldEventDangerPool(state.lastWorldEventReaction ?? ''), state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'worldEventTactic',
   },
@@ -896,7 +911,7 @@ export const STORY_GRAPH: StoryGraph = {
   worldEventOutcome: {
     type: 'wheel',
     id: 'worldEventOutcome',
-    question: 'How does it go?',
+    question: 'Do you come out on top?',
     icon: '⚔️',
     options: (state) =>
       fightOddsOptions(
@@ -928,7 +943,8 @@ export const STORY_GRAPH: StoryGraph = {
       defeatedOpponents: [...state.defeatedOpponents, state.lastOpponent ?? 'the threat'],
       pendingReturnNode: hubIdFor(state),
     }),
-    next: (state, label) => (label === 'A Devil Fruit' && !state.devilFruit ? 'devilFruitFoundType' : 'rankIncreaseCheck'),
+    next: (state, label) =>
+      label === 'A Devil Fruit' && !state.devilFruit ? 'devilFruitFoundType' : rankIncreaseCheckIdFor(state),
   },
 
   worldEventDeathRoll: {
@@ -952,6 +968,160 @@ export const STORY_GRAPH: StoryGraph = {
     options: lossConsequenceOptions,
     onSelect: (state, label) => ({ ...applyLossConsequence(state, label), pendingReturnNode: hubIdFor(state) }),
     next: 'growthCheck',
+  },
+
+  // ---- new island: exploring it directly, rather than fighting a claim-jumper -------------
+  worldEventIslandDiscovery: {
+    type: 'wheel',
+    id: 'worldEventIslandDiscovery',
+    category: 'World Event',
+    question: 'What do you find on the new island?',
+    icon: '🏝️',
+    options: (state) => {
+      const options = [
+        opt('A Road Poneglyph lead', 3, '#be185d'),
+        opt('Untold treasure', 3, '#78350f'),
+        opt('The island is already claimed — by something hostile', 3, '#7f1d1d'),
+      ]
+      if (!state.devilFruit) options.splice(1, 0, opt('A Devil Fruit', 2, '#7c3aed'))
+      return options
+    },
+    onSelect: (state, label) => ({
+      ...(label === 'A Road Poneglyph lead' ? withPoneglyph(state) : state),
+      pendingReturnNode: hubIdFor(state),
+    }),
+    next: (state, label) => {
+      if (label === 'A Devil Fruit' && !state.devilFruit) return 'devilFruitFoundType'
+      if (label === 'The island is already claimed — by something hostile') return 'worldEventIslandDanger'
+      return rankIncreaseCheckIdFor(state)
+    },
+  },
+
+  worldEventIslandDanger: {
+    type: 'wheel',
+    id: 'worldEventIslandDanger',
+    question: 'Do you make it off the island safely?',
+    icon: '🏝️',
+    options: (state) => survivalOdds(state, "the island's guardians", 1),
+    onSelect: (state, label) => ({
+      ...state,
+      pendingReturnNode: hubIdFor(state),
+      ...(label === 'No' ? { causeOfDeath: "Whatever claimed that island made sure you'd never leave it." } : {}),
+    }),
+    next: (state, label) => (label === 'Yes' ? rankIncreaseCheckIdFor(state) : hubIdFor(state)),
+  },
+
+  // ---- rival crew war: the two reactions that don't just reuse rivalEncounter outright -------
+  worldEventRivalTrap: {
+    type: 'wheel',
+    id: 'worldEventRivalTrap',
+    category: 'Rival',
+    question: 'Who takes the bait?',
+    icon: '🪤',
+    // Setting the trap already *is* the tactic — this skips straight to marineOutcome (the same
+    // shared outcome/aftermath chain rivalEncounter itself uses via marineTactic) with an Ambush
+    // bonus baked in, rather than asking "how do you handle it?" a second time.
+    options: (state) => npcOptions(rivalRosterWithImmortals(), state),
+    onSelect: (state, label) => ({ ...state, lastOpponent: label, pendingTacticBonus: tacticBonus('Ambush') }),
+    next: 'marineOutcome',
+  },
+
+  worldEventNegotiate: {
+    type: 'wheel',
+    id: 'worldEventNegotiate',
+    category: 'Rival',
+    question: 'Does the negotiation hold?',
+    icon: '🕊️',
+    options: [
+      opt('Yes', 4, '#16a34a', 'A tense truce, but a truce.'),
+      opt('No', 6, '#dc2626', 'They were never going to talk.'),
+    ],
+    // A failed negotiation just becomes the same rival fight "Meet them head-on" leads to —
+    // rivalEncounter picks its own target fresh.
+    next: (state, label) => (label === 'Yes' ? hubIdFor(state) : 'rivalEncounter'),
+  },
+
+  // ---- Reverie: crashing it uses worldEventDanger; this is the "use the chaos" branch -------
+  worldEventReverieHeist: {
+    type: 'wheel',
+    id: 'worldEventReverieHeist',
+    category: 'World Event',
+    question: 'What do you make of the chaos?',
+    icon: '🎭',
+    options: (state) => {
+      const options = [
+        opt('You steal a valuable secret', 3, '#be185d'),
+        opt('You recruit a disillusioned defector', 3, '#1d4ed8'),
+        opt('CP0 catches you in the act', 3, '#7f1d1d'),
+      ]
+      if (!state.devilFruit) options.splice(2, 0, opt('You slip away with a Devil Fruit', 2, '#7c3aed'))
+      return options
+    },
+    onSelect: (state, label) => {
+      if (label === 'You recruit a disillusioned defector') {
+        return { ...state, crew: [...state.crew, { name: 'A disillusioned defector', role: 'Defector' }] }
+      }
+      return label === 'You steal a valuable secret' ? withPoneglyph(state) : state
+    },
+    next: (state, label) => {
+      if (label === 'You slip away with a Devil Fruit' && !state.devilFruit) return 'devilFruitFoundType'
+      if (label === 'CP0 catches you in the act') return 'worldEventReverieCaught'
+      return hubIdFor(state)
+    },
+  },
+
+  worldEventReverieCaught: {
+    type: 'wheel',
+    id: 'worldEventReverieCaught',
+    question: 'Do you slip away in time?',
+    icon: '🕴️',
+    options: (state) =>
+      fightOddsOptions(
+        state,
+        'A CP0 black-ops agent',
+        'You vanish into the crowd before they close in.',
+        'They corner you.',
+      ),
+    onSelect: (state) => ({ ...state, lastOpponent: 'A CP0 black-ops agent' }),
+    next: (state, label) => (label === 'Yes' ? hubIdFor(state) : 'worldEventDeathRoll'),
+  },
+
+  // ---- storm wrecks half the Grand Line: three genuinely different responses -----------------
+  worldEventStormRescue: {
+    type: 'wheel',
+    id: 'worldEventStormRescue',
+    category: 'World Event',
+    question: 'Do you reach them in time?',
+    icon: '🌊',
+    options: (state) =>
+      fightOddsOptions(
+        state,
+        'The raging storm itself',
+        'You pull the stranded sailors to safety.',
+        'The storm tears your ship away before you reach them.',
+      ),
+    onSelect: (state, label) => ({
+      ...state,
+      lastOpponent: 'The raging storm itself',
+      pendingReturnNode: hubIdFor(state),
+      ...(label === 'Yes' ? { crew: [...state.crew, { name: 'A rescued sailor', role: 'Grateful crewmate' }] } : {}),
+    }),
+    next: (state, label) => (label === 'Yes' ? rankIncreaseCheckIdFor(state) : 'worldEventDeathRoll'),
+  },
+
+  worldEventStormRideOut: {
+    type: 'wheel',
+    id: 'worldEventStormRideOut',
+    category: 'World Event',
+    question: 'Does your ship survive?',
+    icon: '🌊',
+    options: (state) => survivalOdds(state, 'The raging storm itself', 1),
+    onSelect: (state, label) => ({
+      ...state,
+      lastOpponent: 'The raging storm itself',
+      ...(label === 'No' ? { causeOfDeath: 'The storm swallowed your ship whole. Your story ends here.' } : {}),
+    }),
+    next: hubIdFor,
   },
 
   // ---- meeting other pirates --------------------------------------------
@@ -1118,7 +1288,7 @@ export const STORY_GRAPH: StoryGraph = {
             pendingReturnNode: hubIdFor(state),
           }
         : state,
-    next: (_state, label) => (label === 'Yes' ? 'rankIncreaseCheck' : 'poneglyphDeathRoll'),
+    next: (state, label) => (label === 'Yes' ? rankIncreaseCheckIdFor(state) : 'poneglyphDeathRoll'),
   },
 
   poneglyphDeathRoll: {
@@ -1251,7 +1421,7 @@ export const STORY_GRAPH: StoryGraph = {
       opt('You kill them', 2, '#450a0a'),
     ],
     onSelect: (state, label) => ({ ...applyAftermath(state, label), pendingReturnNode: hubIdFor(state) }),
-    next: 'rankIncreaseCheck',
+    next: rankIncreaseCheckIdFor,
   },
 
   marineLossConsequence: {
@@ -1331,7 +1501,7 @@ export const STORY_GRAPH: StoryGraph = {
       opt('You kill them', 2, '#450a0a'),
     ],
     onSelect: (state, label) => ({ ...applyAftermath(state, label), pendingReturnNode: hubIdFor(state) }),
-    next: 'rankIncreaseCheck',
+    next: rankIncreaseCheckIdFor,
   },
 
   pirateFightLossConsequence: {
@@ -1738,15 +1908,15 @@ export const STORY_GRAPH: StoryGraph = {
     onSelect: (state, label) => {
       if (label === 'Eat it') {
         if (state.devilFruit) {
-          // Already carrying one fruit's power — whether a second one is survivable at all is
-          // decided by the wheel next, not here.
+          // Already carrying one fruit's power — whether a second one is survivable at all, and
+          // (if so) which slot's mastery the next wheel targets, is decided further down the
+          // chain — pendingSecondFruit stays true until devilFruitFoundMastery consumes it.
           return { ...state, pendingSecondFruit: true }
         }
         return {
           ...state,
           devilFruit: state.pendingFoundFruit,
           devilFruitType: state.pendingDevilFruitType,
-          devilFruitMastery: DEVIL_FRUIT_MASTERY_LEVELS[0],
           pendingSecondFruit: false,
         }
       }
@@ -1755,7 +1925,10 @@ export const STORY_GRAPH: StoryGraph = {
       }
       return { ...state, pendingSecondFruit: false }
     },
-    next: (state, label) => (label === 'Eat it' && state.pendingSecondFruit ? 'secondDevilFruitSurvival' : hubIdFor(state)),
+    next: (state, label) => {
+      if (label !== 'Eat it') return hubIdFor(state)
+      return state.pendingSecondFruit ? 'secondDevilFruitSurvival' : 'devilFruitFoundMastery'
+    },
   },
 
   secondDevilFruitSurvival: {
@@ -1767,12 +1940,12 @@ export const STORY_GRAPH: StoryGraph = {
     options: secondDevilFruitSurvivalOdds,
     onSelect: (state, label) => {
       if (label === 'Survive') {
+        // pendingSecondFruit stays true — devilFruitFoundMastery reads it to know this roll
+        // targets secondDevilFruitMastery, not the primary fruit's.
         return {
           ...state,
           secondDevilFruit: state.pendingFoundFruit,
           secondDevilFruitType: state.pendingDevilFruitType,
-          secondDevilFruitMastery: DEVIL_FRUIT_MASTERY_LEVELS[0],
-          pendingSecondFruit: false,
         }
       }
       return {
@@ -1781,6 +1954,24 @@ export const STORY_GRAPH: StoryGraph = {
         causeOfDeath: `You already carried the power of the ${state.devilFruit}. Eating the ${state.pendingFoundFruit} on top of it tore your body apart from the inside — one in a million bodies could have withstood it, and yours wasn't one of them.`,
       }
     },
+    next: (state, label) => (label === 'Survive' ? 'devilFruitFoundMastery' : hubIdFor(state)),
+  },
+
+  // Shared by a first-time bite (devilFruitDisposal) and a surviving second bite
+  // (secondDevilFruitSurvival) — pendingSecondFruit (still true only in the latter case) decides
+  // which mastery field this roll writes to.
+  devilFruitFoundMastery: {
+    type: 'wheel',
+    id: 'devilFruitFoundMastery',
+    category: 'Devil Fruit',
+    question: 'How well do you control it?',
+    icon: '🍈',
+    options: DEVIL_FRUIT_MASTERY_START_OPTIONS,
+    onSelect: (state, label) => ({
+      ...state,
+      ...(state.pendingSecondFruit ? { secondDevilFruitMastery: label } : { devilFruitMastery: label }),
+      pendingSecondFruit: false,
+    }),
     next: hubIdFor,
   },
 

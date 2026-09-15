@@ -1823,6 +1823,108 @@ export const RIVAL_ROSTER: NpcDef[] = [
   },
 ]
 
+// Canon Revolutionary Army figures — the only static (non-immortalized) roster
+// revolutionaryRosterOptions() draws from, since no such roster existed before.
+export const REVOLUTIONARY_ROSTER: NpcDef[] = [
+  {
+    // Koala trained under Fisher Tiger and fights alongside Sabo — a solid rank-and-file
+    // officer, not yet commander-tier.
+    name: 'Koala',
+    minTier: 2,
+    profile: profile(2, 3, 2, 3, { Armament: 'Basic' }, 3),
+    weight: 3,
+    color: '#0891b2',
+    lethality: 0,
+    notoriety: 3,
+  },
+  {
+    // Logue Town's own — Shiro Shiro no Mi turns her body to paper, deflecting attacks outright.
+    name: 'Inazuma',
+    minTier: 3,
+    profile: profile(3, 2, 4, 4, {}, 2, 2),
+    weight: 2,
+    color: '#a3a3a3',
+    lethality: 1,
+    notoriety: 3,
+  },
+  {
+    name: 'Belo Betty',
+    minTier: 3,
+    profile: profile(3, 4, 3, 3, {}, 3),
+    weight: 2,
+    color: '#dc2626',
+    lethality: 1,
+    notoriety: 3,
+  },
+  {
+    // Karasu's Kama Kama no Mi cuts from a distance on the wind — a dangerous ranged officer.
+    name: 'Karasu',
+    minTier: 4,
+    profile: profile(4, 4, 3, 4, { Armament: 'Basic' }, 3, 2),
+    weight: 2,
+    color: '#111827',
+    lethality: 2,
+    notoriety: 4,
+  },
+  {
+    name: 'Lindbergh',
+    minTier: 4,
+    profile: profile(4, 3, 4, 4, { Armament: 'Basic' }, 3),
+    weight: 2,
+    color: '#166534',
+    lethality: 1,
+    notoriety: 3,
+  },
+  {
+    // A Revolutionary Army giant officer — commands the G-3 army.
+    name: 'Morley',
+    minTier: 4,
+    profile: profile(5, 2, 6, 5, { Armament: 'Basic' }, 3),
+    weight: 2,
+    color: '#ea580c',
+    lethality: 1,
+    notoriety: 4,
+    hasCrew: true,
+  },
+  {
+    // "Queen" of Kamabakka Kingdom, Horu Horo no Mi, one of the Revolutionary Army's core
+    // commanders and one of Dragon's most trusted.
+    name: 'Emporio Ivankov',
+    minTier: 5,
+    profile: profile(6, 5, 5, 6, { Armament: 'Basic', Observation: 'Basic' }, 4, 3),
+    weight: 2,
+    color: '#f472b6',
+    lethality: 2,
+    notoriety: 6,
+    hasCrew: true,
+  },
+  {
+    // Chief of Staff — inherited the Mera Mera no Mi, demonstrated Admiral-adjacent combat
+    // (traded blows with Fujitora, fought a Blackbeard-crew commander to a standstill).
+    name: 'Sabo',
+    minTier: 6,
+    profile: profile(7, 6, 6, 6, { Armament: 'Advanced', Observation: 'Basic' }, 4, 4),
+    weight: 2,
+    color: '#1d4ed8',
+    lethality: 2,
+    notoriety: 7,
+    hasCrew: true,
+  },
+  {
+    // Monkey D. Dragon — leader of the Revolutionary Army, "the World's Most Wanted Man."
+    // Canon has never shown him fight, but strongly implies weather-bending power; left with
+    // no confirmed Devil Fruit mastery, same treatment as Imu/Garling above.
+    name: 'Monkey D. Dragon',
+    minTier: 7,
+    profile: profile(8, 6, 8, 7, { Armament: 'Advanced', Observation: 'Advanced', "Conqueror's": 'Advanced' }, 5),
+    weight: 1,
+    color: '#1e293b',
+    lethality: 3,
+    notoriety: 10,
+    hasCrew: true,
+  },
+]
+
 // ---------------------------------------------------------------------------
 // starting crew origin (Pirate only)
 // ---------------------------------------------------------------------------
@@ -1961,12 +2063,57 @@ export function rivalRosterWithImmortals(): NpcDef[] {
   return [...RIVAL_ROSTER, ...immortalsOfAffiliation('Revolutionary').map(toNpcDef)]
 }
 
-/** No static roster of canon Revolutionary NPCs exists — this pool is immortalized
- * Revolutionaries only, so the "Revolutionaries confront you" hub option only ever appears
- * once at least one exists (see immortalsOfAffiliation('Revolutionary').length > 0 gating in
- * storyGraph.ts). */
+/** REVOLUTIONARY_ROSTER (canon Revolutionary Army figures) plus any immortalized
+ * Revolutionaries. The hub option that routes here ("Revolutionaries confront you") is always
+ * available now that a canon roster exists — it no longer needs to be gated behind at least one
+ * immortalized Revolutionary existing. */
 export function revolutionaryRosterOptions(state: CharacterState): WheelOption[] {
-  return npcOptions(immortalsOfAffiliation('Revolutionary').map(toNpcDef), state)
+  return npcOptions([...REVOLUTIONARY_ROSTER, ...immortalsOfAffiliation('Revolutionary').map(toNpcDef)], state)
+}
+
+/**
+ * Curated opponent pool for the handful of world-event reactions that escalate into a full
+ * tactic/outcome encounter via the shared `worldEventDanger` node — keyed by the reaction's own
+ * label (every risky reaction label is unique across all 6 events, so no need to also key by
+ * which event triggered it). Each pool is hand-picked to fit that specific reaction rather than
+ * pulling from one undifferentiated roster: joining a Yonko-vs-Marines clash on the Marine side
+ * draws real Admirals, joining the Yonko's side draws the Yonko's own commanders, crashing a
+ * Reverie draws the World Government's own elite (up to and including the Five Elders and Imu),
+ * seeking an Ancient Weapon draws its guardian or the agents racing you for it, and looting
+ * storm wreckage draws an opportunist rival captain doing the same — never a mismatch like
+ * facing "the raging storm itself" over a rival crew's declaration of war.
+ */
+const WORLD_EVENT_DANGER_POOL: Record<string, () => NpcDef[]> = {
+  'Join the Yonko': () => MARINE_TIER_5,
+  'Join the Marines': () => [
+    ...PIRATE_ROSTER.filter((n) => n.name === 'A Big Mom Pirates Commander' || n.name === 'A Beast Pirates Commander'),
+    ...WORLD_EVENT_THREATS.filter((n) => n.name === 'A rival Yonko commander'),
+  ],
+  'Seek it out': () =>
+    WORLD_EVENT_THREATS.filter((n) => n.name === 'An Ancient Weapon guardian' || n.name === 'A CP0 black-ops agent'),
+  'Try to crash it': () =>
+    WORLD_EVENT_THREATS.filter((n) =>
+      [
+        'A CP0 black-ops agent',
+        'A rampaging Marine fleet',
+        'Figarland Shamrock',
+        'Manmayer Gunko',
+        'Shepherd Sommers',
+        'Rimoshifu Killingham',
+        'Saint Jaygarcia Saturn',
+        'Saint Marcus Mars',
+        'Saint Topman Warcury',
+        'Saint Ethanbaron V. Nusjuro',
+        'Saint Shepherd Ju Peng',
+        'Imu',
+        'Garling Figarland',
+      ].includes(n.name),
+    ),
+  'Loot the wreckage': () => WORLD_EVENT_THREATS.filter((n) => n.name === 'A desperate rival captain'),
+}
+
+export function worldEventDangerPool(reactionLabel: string): NpcDef[] {
+  return WORLD_EVENT_DANGER_POOL[reactionLabel]?.() ?? WORLD_EVENT_THREATS
 }
 
 const ALL_NPCS: NpcDef[] = [
@@ -1978,6 +2125,7 @@ const ALL_NPCS: NpcDef[] = [
   ...PIRATE_ROSTER,
   ...WORLD_EVENT_THREATS,
   ...RIVAL_ROSTER,
+  ...REVOLUTIONARY_ROSTER,
 ]
 
 /** Looks up any opponent by name — a canon roster NPC first, falling back to a persisted

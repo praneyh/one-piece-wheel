@@ -164,6 +164,10 @@ export type CharacterState = {
   lastOpponent?: string
   lastMet?: string
   lastWorldEvent?: string
+  /** The reaction label picked on worldEventReaction — looked up in WORLD_EVENT_DANGER_POOL
+   * (gameData.ts) by the shared worldEventDanger node to pick an opponent pool that actually
+   * fits that specific reaction, rather than one roster for every risky reaction. */
+  lastWorldEventReaction?: string
   pendingTacticBonus?: number
   devilFruit?: string
   devilFruitType?: DevilFruitType

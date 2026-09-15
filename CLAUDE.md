@@ -135,15 +135,21 @@ and *why* they exist (most are self-explanatory from the name):
 - `pendingEventRarityWeight` — carries the *triggering hub option's own wheel weight* into a
   non-combat growth check, so a rarer-to-land-on experience produces better growth odds
   (`growthOddsGeneric`) than a routine one.
-- `pendingSecondFruit` — true only while resolving the "eat a second Devil Fruit" survival wheel.
-  Needed because `onSelect` sets `devilFruit` for *both* a first-time bite and a second-fruit
-  bite by the time `next` inspects post-`onSelect` state, so this flag is the only way to tell
-  which case is active.
+- `pendingSecondFruit` — true from the moment a second bite is chosen through to
+  `devilFruitFoundMastery` resolving. Needed because `onSelect` sets `devilFruit`/`secondDevilFruit`
+  the same way for both a first-time bite and a second-fruit bite by the time `next` inspects
+  post-`onSelect` state, so this flag is the only way to tell which case is active — and its
+  lifetime was deliberately extended to also tell the shared `devilFruitFoundMastery` node
+  (see "Devil Fruits" below) whether the mastery roll it's about to make targets
+  `devilFruitMastery` or `secondDevilFruitMastery`.
 - `immortalName` — permanent (not "pending"), set once by `submitImmortalName` when a character
   is immortalized; read by `EndingScreen` to personalize the ending.
 - `pendingImmortalReplaceName` — only set while resolving the "hall is full" gauntlet fight (see
   "Immortalized characters" below); carries the name of the existing legend who'll be deleted and
   replaced if the gauntlet is won.
+- `lastWorldEventReaction` — the reaction label picked on `worldEventReaction`, looked up by the
+  shared `worldEventDanger` node (see "World events" below) to pick an opponent pool that
+  actually fits that specific reaction rather than one roster for every risky reaction.
 - Four core stats live on separate tier ladders in `types.ts`:
   - `POWER_TIERS` / `DURABILITY_TIERS` (same 14-rung ladder, Normal Human → Universal Level)
   - `SPEED_TIERS` (13 rungs, Normal Human → Infinite Speed, includes FTL)
@@ -152,7 +158,7 @@ and *why* they exist (most are self-explanatory from the name):
     how race/bloodline stat mods are applied as guaranteed floors on the wheel itself (see below)
     rather than as an after-the-fact adjustment.
 
-## `src/data/gameData.ts` — rules, odds, and rosters (~2100 lines)
+## `src/data/gameData.ts` — rules, odds, and rosters (~2280 lines)
 
 `opt(label, weight, color, flavorText?)` is the universal `WheelOption` builder used everywhere.
 
@@ -288,6 +294,13 @@ it (3), Feed it to a weapon (1) — the last one sets `weaponHasDevilFruit`.
 `devilFruitEncounter` (a mid-run hub side-quest, not the starting-fruit roll) is a fixed 65%
 Yes / 35% "No, it slips away" — finding one at all is common, but not guaranteed.
 
+Eating a found fruit — first bite or a survived second one — always rolls a
+`devilFruitFoundMastery` wheel (`DEVIL_FRUIT_MASTERY_START_OPTIONS`, the same pool the *starting*
+fruit flow's `devilFruitStartMastery` uses) rather than silently defaulting to "Untrained." Both
+`devilFruitDisposal`'s "Eat it" and `secondDevilFruitSurvival`'s "Survive" route here; which
+field it writes to (`devilFruitMastery` vs `secondDevilFruitMastery`) is decided by whether
+`pendingSecondFruit` is still `true` when it resolves (see `types.ts` notes above).
+
 **Second Devil Fruit**: `secondDevilFruitSurvivalOdds()` is a hardcoded 2% Survive / 98% Die,
 independent of the character's own stats — canon has never shown a survivor, so this isn't
 modeled as "beatable with high enough Endurance," it's a fixed fluke chance. The rare survivor's
@@ -320,8 +333,16 @@ what selects *which* of the 5 Marine rosters below shows up as an opponent pool;
 separate "difficulty" spin, the rank itself gates it, and only a maxed-out bounty ever draws from
 tier 5.
 
+**Every path into the shared post-fight rank/growth sequence routes through
+`rankIncreaseCheckIdFor(state)` (storyGraph.ts), not the literal `'rankIncreaseCheck'` string.**
+It skips straight to the growth check (`growthCheckIdFor(state)`) once `isAtMaxRank(state)` is
+true — "Does your reputation grow?" is a meaningless question with nowhere higher to climb, so
+the wheel no longer spins it at all rather than just gating what happens *after* a "Yes." Every
+call site that used to hardcode `next: 'rankIncreaseCheck'` was migrated to this helper — if you
+add a new fight-shaped consequence chain, route through it too rather than the literal string.
+
 ### NPC rosters (`ALL_NPCS` = Marine tiers 1-5 + Pirate roster + World Event threats + Rival
-roster), ~60 hand-assessed canon characters
+roster + Revolutionary roster), ~70 hand-assessed canon characters
 Built via the compact `profile(power, speed, durability, endurance, haki, masteryIdx,
 dfMasteryIdx?)` helper — tier *indices* into the shared ladders, not labels, with commentary
 explaining canon reasoning inline for the less obvious placements. NPC power/speed/endurance are
@@ -347,6 +368,12 @@ axis sat at its cap is ~90/100 overall strength.
   Arlong, Bellamy, Caesar Clown, Capone Bege, Crocodile, Gecko Moria, Doflamingo, Blackbeard
   (ties the power ceiling), Shanks (top tier despite no Devil Fruit — leans entirely on
   stats/Haki/mastery), plus at least one Elbaf Giant antagonist.
+- **Revolutionary roster** (`REVOLUTIONARY_ROSTER`) — the only static roster
+  `revolutionaryRosterOptions()` draws from (merged with any immortalized Revolutionaries; see
+  "Immortalized characters" below). 9 canon Revolutionary Army figures: rank-and-file (Koala,
+  Inazuma, Belo Betty) up through officers (Karasu, Lindbergh, Morley) and core commanders
+  (Ivankov, Sabo) to Dragon at the top (notoriety 10, no confirmed Devil Fruit mastery — same
+  off-screen-feats treatment as Imu/Garling, since canon has never shown him fight).
 
 **Every opponent lookup (`npcCombatProfile`, `npcStrength`, `npcLethality`, `npcNotoriety`) goes
 through a shared `findNpc(name)`**: `ALL_NPCS.find(...)` first, falling back to
@@ -470,13 +497,69 @@ immortals, silently appending a Roman-numeral suffix (`uniqueImmortalName`, " II
 on collision rather than blocking submission.
 
 ### World events
-`WORLD_EVENT_REACTIONS` is a per-event reaction map (6 named events: Yonko-vs-Marines clash, new
-island rises, Ancient Weapon stirs, rival crew declares war, Reverie, storm wrecks the Grand
-Line) with `GENERIC_EVENT_REACTIONS` as a fallback for anything else. `RISKY_REACTIONS` (in
-storyGraph.ts) is a fixed set of specific reaction labels that escalate into a full high-stakes
-encounter chain rather than resolving as flavor-only.
+`WORLD_EVENT_REACTIONS` (gameData.ts) is a per-event reaction map (6 named events: Yonko-vs-Marines
+clash, new island rises, Ancient Weapon stirs, rival crew declares war, Reverie, storm wrecks the
+Grand Line — each with exactly 3 reaction options) with `GENERIC_EVENT_REACTIONS` as a defensive
+fallback that's currently unreachable (every `worldEvent` option has a matching
+`WORLD_EVENT_REACTIONS` key).
 
-## `src/data/storyGraph.ts` — the ~95-node story graph (~1800 lines)
+**Every reaction gets its own tailored consequence — there is no single generic "what do you
+face?" escalation shared across events.** This was a deliberate rework: the original design threw
+every "risky" reaction at one undifferentiated `WORLD_EVENT_THREATS` roster regardless of which
+event or reaction triggered it, which could land a storm-rescue attempt against Imu or a rival
+crew's declaration of war against "the raging storm itself." Now, `worldEventReaction`'s `onSelect`
+records the exact reaction label into `state.lastWorldEventReaction`, and `next` looks it up in
+`WORLD_EVENT_REACTION_ROUTES` (storyGraph.ts, replaces the old `RISKY_REACTIONS` Set) — a label
+with no entry there is flavor-only and returns straight to the hub, same as before.
+
+Reactions that escalate fall into three tiers, each with a genuinely different shape rather than
+one reused for everything:
+
+1. **Epic/world-scale confrontation** — `'Join the Yonko'`, `'Join the Marines'`, `'Seek it out'`
+   (Ancient Weapon), `'Try to crash it'` (Reverie), and `'Loot the wreckage'` (storm) all route to
+   the shared `worldEventDanger` node. Its `options` calls
+   `worldEventDangerPool(state.lastWorldEventReaction)` (gameData.ts) — a lookup, keyed by
+   reaction label (every risky label is unique across all 6 events, so the reaction alone
+   disambiguates without also needing the event name), that hand-picks which slice of
+   `MARINE_TIER_5`/`PIRATE_ROSTER`/`WORLD_EVENT_THREATS` actually fits: joining the Yonko's side
+   of a clash draws real Admirals (`MARINE_TIER_5`); joining the Marines' side draws the Yonko's
+   own commanders (`'A Big Mom Pirates Commander'`, `'A Beast Pirates Commander'`, `'A rival
+   Yonko commander'`); seeking an Ancient Weapon draws its guardian or a CP0 agent racing you for
+   it; crashing a Reverie draws the World Government's own elite up to and including the Five
+   Elders, Imu, and Garling Figarland (this is now the *only* way to encounter that top tier —
+   crashing the one event where they'd plausibly all be gathered); looting storm wreckage draws
+   `'A desperate rival captain'`, an opportunist doing the same thing you are. From there it's the
+   same shared chain as before: `worldEventTactic` → `worldEventOutcome` ("Do you come out on
+   top?" — reworded from the nonsensical "How does it go?") → `worldEventReward` (Devil
+   Fruit/Poneglyph/ally/reputation/glory menu) or `worldEventDeathRoll` → `worldEventLossConsequence`.
+2. **Mundane rival-style confrontation** — `'Meet them head-on'` (rival crew war) and `'Claim it
+   for your flag'` (new island) both route straight to the existing `rivalEncounter` node (a
+   rival crew contesting your claim is exactly what that roster already represents — no new node
+   needed). `'Set a trap'` (rival crew war) is the one variant: `worldEventRivalTrap` picks the
+   same `rivalRosterWithImmortals()` pool but bakes in an Ambush tactic bonus and skips straight
+   to `marineOutcome`, since setting the trap *is* the tactic choice — no second "how do you
+   handle it?" spin. All three land in the same shared `marineTactic`/`marineAftermath` chain
+   `rivalEncounter` always used.
+3. **Non-combat / environmental** — no "who do you face?" framing at all:
+   - `'Explore it immediately'` (new island) → `worldEventIslandDiscovery`, a discovery-outcome
+     wheel (Poneglyph lead / Devil Fruit / treasure / hostile inhabitants), the last of which
+     routes to a direct `worldEventIslandDanger` survival roll rather than a named fight.
+   - `'Try to negotiate peace'` (rival crew war) → `worldEventNegotiate`, a fixed-odds Yes/No
+     (peace holds, or it collapses straight into `rivalEncounter`).
+   - `'Use the distraction to your advantage'` (Reverie) → `worldEventReverieHeist`, a heist-flavored
+     outcome wheel (steal a secret / recruit a defector / grab a Devil Fruit / get caught), with
+     "get caught" alone escalating to a small `worldEventReverieCaught` fight-or-flee roll against
+     a specifically-named `'A CP0 black-ops agent'`.
+   - `'Help stranded sailors'` and `'Ride out the storm'` both roll `fightOddsOptions`/`survivalOdds`
+     directly against `'The raging storm itself'` (an existing `WORLD_EVENT_THREATS` entry,
+     previously unreachable in a way that made sense) — no tactic-choice step, since "Frontal
+     assault" against weather doesn't mean anything; a successful rescue directly grants a rescued
+     crewmate rather than rolling the generic reward menu.
+
+`applyWorldEventBoost` (multiplies the hub's `'World Event'` option weight for Monkey D. Family)
+is unrelated to any of this and unchanged.
+
+## `src/data/storyGraph.ts` — the ~104-node story graph (~2000 lines)
 
 `START_NODE_ID = 'affiliation'`. Helper functions worth knowing before editing nodes:
 - `hubIdFor(state)` → `` `hub${state.affiliation}` `` — the return address for most side-quest
@@ -526,11 +609,17 @@ encounter chain rather than resolving as flavor-only.
    pick a tactic → resolve fight odds (`fightOddsOptions`) → on loss, roll `survivalOdds`; a
    `No` there sets `causeOfDeath` and the store's `applySelection` immediately overrides
    routing to `'ending'` regardless of the node's own `next`. On survival either way, route into
-   the shared `rankIncreaseCheck`/`growthCheck` sequence, which returns to `pendingReturnNode ??
-   hubIdFor(state)`.
+   the shared `rankIncreaseCheckIdFor(state)`/`growthCheck` sequence (skips the rank check
+   entirely once `isAtMaxRank(state)`), which returns to `pendingReturnNode ?? hubIdFor(state)`.
+3a. **World events** are the one hub branch that *doesn't* follow that single shape — see the
+   dedicated "World events" section above. `worldEvent` → `worldEventReaction` → routes per the
+   specific reaction picked (`WORLD_EVENT_REACTION_ROUTES`), landing in one of three genuinely
+   different consequence shapes (epic confrontation / mundane rival fight / non-combat
+   environmental) rather than one generic escalation for every risky reaction.
 4. **Devil Fruit encounter mid-run** can lead to eating a second fruit
    (`secondDevilFruitSurvival`, 2%/98%) — `pendingSecondFruit` disambiguates this from a
-   first-time bite in `next` routing (see `types.ts` notes above).
+   first-time bite in `next` routing (see `types.ts` notes above), and either case then rolls
+   `devilFruitFoundMastery` before returning to the hub.
 5. **Road Poneglyphs** (`poneglyphMethod` → either `poneglyphTarget` → tactic/fight chain to
    steal one, or `poneglyphSearchLocation` → `poneglyphSearchResult` for a passive search) — low
    find odds (`poneglyphFindOdds`, 1-9 out of 10), better at higher rank tier, with the Nico
@@ -590,6 +679,14 @@ encounter chain rather than resolving as flavor-only.
   directly from `gameData.ts`/`storyGraph.ts`/`store.ts`; go through its exported functions so
   the try/catch-wrapped read/write behavior (Safari private mode, quota errors, etc.) stays in
   one place.
+- Don't route narratively distinct triggers through one shared "what do you face?" escalation
+  just because the mechanical shape (roster pick → tactic → outcome) is reusable — that's what
+  produced the original World Events bug (a storm-rescue attempt could draw Imu as the threat).
+  A shared *mechanism* is fine (`worldEventDanger`, `marineTactic`/`marineOutcome`, etc.); a
+  shared *opponent pool or non-combat outcome set* across unrelated triggers is the actual
+  mistake to avoid — curate per-trigger (see `WORLD_EVENT_DANGER_POOL` in gameData.ts) or give
+  the trigger its own small dedicated node when even the mechanism doesn't fit (an environmental
+  hazard like a storm isn't a "pick a tactic and fight someone" situation).
 
 ---
 *This file is maintained by Claude across sessions — after any non-trivial change to
