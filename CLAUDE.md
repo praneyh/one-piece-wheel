@@ -415,6 +415,17 @@ nudge both wheels toward the higher end via `biasLadderOptions` (shifts the whol
 N positions rather than just adding a flat bonus, preserving its shape). The same crew-strength
 wheel is reused for every individually recruited crewmate later in the run.
 
+**`traitorEncounter`** (Revolutionary hub's "A traitor from within challenges you") is the one
+opponent-picker that draws straight from `state.crew` instead of any canon/immortalized roster —
+an insider threat has to actually be someone you recruited. The hub option itself is gated
+behind `state.crew.length > 0` (same conditional-push pattern as "reforge your weapon"), and
+`onSelect` removes the chosen name from `state.crew` immediately (not just after the fight
+resolves), since `myCrewEdgeBonus` sums everyone still in `state.crew` into the player's own
+combat edge — leaving the traitor in there would let them boost your side of the fight against
+yourself. Named crew members aren't in `ALL_NPCS`, so `findNpc` won't resolve one and the fight
+falls back to `FALLBACK_COMBAT_PROFILE` — an accepted, already-established pattern for
+descriptive/non-roster opponents elsewhere in the game (e.g. "the island's guardians").
+
 ### Road Poneglyph search locations
 A passive "Search for them" (as opposed to stealing one off another pirate) first rolls a
 `poneglyphSearchLocation` wheel (`PONEGLYPH_SEARCH_LOCATIONS`, gameData.ts) — 8 flavor locations
@@ -583,9 +594,13 @@ is unrelated to any of this and unchanged.
   both `marineAftermath` and `pirateFightAftermath` call, and `'You kill them'` appears nowhere
   else in the file (so `revolutionaryEncounter`/`rivalEncounter`, which route through the shared
   `marineAftermath`, inherit the same permanent-removal behavior for free).
-- `lossConsequenceOptions`/`applyLossConsequence` — on a lost-but-survived fight, "You lose an
-  ally" only appears as an option if `state.crew.length > 0`, and randomly drops one crewmate
-  into `deceased` if chosen.
+- `lossConsequenceOptions` — on a lost-but-survived fight, "You lose an ally" only appears as an
+  option if `state.crew.length > 0`. It no longer resolves *which* crewmate invisibly
+  (`applyLossConsequence` was removed once that was its only job) — landing on it routes to the
+  shared `loseAllyTarget` wheel instead (a spin over `state.crew` itself), which removes the
+  chosen name from `state.crew` and adds them to `deceased`. Every `*LossConsequence` node's
+  `next` branches on the label (`'You lose an ally' → 'loseAllyTarget'`, anything else →
+  `'growthCheck'` directly) rather than a static string.
 
 ### Flow overview
 1. **Character creation** (linear-ish): `affiliation` → `race` (→ `raceHybrid1`/`raceHybrid2` if

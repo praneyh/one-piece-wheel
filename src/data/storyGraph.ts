@@ -214,18 +214,9 @@ function applyAftermath(state: CharacterState, label: string): CharacterState {
 
 function lossConsequenceOptions(state: CharacterState): WheelOption[] {
   const base = [opt('You barely escape', 6, '#374151'), opt('Word spreads of your defeat', 2, '#7f1d1d')]
+  // Which ally is lost isn't decided here — landing on this spins loseAllyTarget next.
   if (state.crew.length > 0) base.splice(1, 0, opt('You lose an ally', 2, '#450a0a'))
   return base
-}
-
-function applyLossConsequence(state: CharacterState, label: string): CharacterState {
-  if (label === 'You lose an ally' && state.crew.length > 0) {
-    const idx = Math.floor(Math.random() * state.crew.length)
-    const lost = state.crew[idx]
-    const crew = state.crew.filter((_, i) => i !== idx)
-    return { ...state, crew, deceased: new Set(state.deceased).add(lost.name) }
-  }
-  return state
 }
 
 const HAKI_PRESET_MAP: Record<string, Partial<Record<HakiType, HakiLevel>>> = {
@@ -737,7 +728,6 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Learn a new fighting style', 3, '#0ea5e9'),
         opt('Find a Devil Fruit', 2, '#7c3aed'),
         opt('You discover ancient ruins', 3, '#78350f'),
-        opt('A traitor from within challenges you', 3, '#450a0a'),
         opt('A legendary master offers to train you', 2, '#facc15'),
         opt('Your cause gains sympathizers', 3, '#0d9488'),
       ]
@@ -745,6 +735,11 @@ export const STORY_GRAPH: StoryGraph = {
       if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
+      }
+      // Only possible once you've actually recruited someone — see traitorEncounter, whose
+      // wheel is drawn from state.crew itself rather than the generic rival roster.
+      if (state.crew.length > 0) {
+        options.push(opt('A traitor from within challenges you', 3, '#450a0a'))
       }
       const immortalize = immortalizeOption(state.hubSpinCount)
       if (immortalize) options.push(immortalize)
@@ -775,7 +770,7 @@ export const STORY_GRAPH: StoryGraph = {
         'Learn a new fighting style': 'fightingStyleLearn',
         'Find a Devil Fruit': 'devilFruitEncounter',
         'You discover ancient ruins': 'ruinsExploration',
-        'A traitor from within challenges you': 'rivalEncounter',
+        'A traitor from within challenges you': 'traitorEncounter',
         'A blacksmith offers to reforge your weapon': 'weaponReforge',
         'Your cause gains sympathizers': 'reputationSpread',
         'Get promoted': 'rankJump',
@@ -966,8 +961,8 @@ export const STORY_GRAPH: StoryGraph = {
     question: "What's the cost?",
     icon: '💥',
     options: lossConsequenceOptions,
-    onSelect: (state, label) => ({ ...applyLossConsequence(state, label), pendingReturnNode: hubIdFor(state) }),
-    next: 'growthCheck',
+    onSelect: (state) => ({ ...state, pendingReturnNode: hubIdFor(state) }),
+    next: (_state, label) => (label === 'You lose an ally' ? 'loseAllyTarget' : 'growthCheck'),
   },
 
   // ---- new island: exploring it directly, rather than fighting a claim-jumper -------------
@@ -1310,8 +1305,8 @@ export const STORY_GRAPH: StoryGraph = {
     question: "What's the cost?",
     icon: '💥',
     options: lossConsequenceOptions,
-    onSelect: (state, label) => ({ ...applyLossConsequence(state, label), pendingReturnNode: hubIdFor(state) }),
-    next: 'growthCheck',
+    onSelect: (state) => ({ ...state, pendingReturnNode: hubIdFor(state) }),
+    next: (_state, label) => (label === 'You lose an ally' ? 'loseAllyTarget' : 'growthCheck'),
   },
 
   poneglyphSearchLocation: {
@@ -1430,8 +1425,8 @@ export const STORY_GRAPH: StoryGraph = {
     question: "What's the cost?",
     icon: '💥',
     options: lossConsequenceOptions,
-    onSelect: (state, label) => ({ ...applyLossConsequence(state, label), pendingReturnNode: hubIdFor(state) }),
-    next: 'growthCheck',
+    onSelect: (state) => ({ ...state, pendingReturnNode: hubIdFor(state) }),
+    next: (_state, label) => (label === 'You lose an ally' ? 'loseAllyTarget' : 'growthCheck'),
   },
 
   // ---- fighting pirates (Marine faction) ---------------------------------
@@ -1510,8 +1505,8 @@ export const STORY_GRAPH: StoryGraph = {
     question: "What's the cost?",
     icon: '💥',
     options: lossConsequenceOptions,
-    onSelect: (state, label) => ({ ...applyLossConsequence(state, label), pendingReturnNode: hubIdFor(state) }),
-    next: 'growthCheck',
+    onSelect: (state) => ({ ...state, pendingReturnNode: hubIdFor(state) }),
+    next: (_state, label) => (label === 'You lose an ally' ? 'loseAllyTarget' : 'growthCheck'),
   },
 
   // ---- shared post-fight-win sequence: rank/bounty bump, then growth ------
@@ -1627,6 +1622,44 @@ export const STORY_GRAPH: StoryGraph = {
     options: (state) => revolutionaryRosterOptions(state),
     onSelect: (state, label) => ({ ...state, lastOpponent: label }),
     next: 'marineTactic',
+  },
+
+  // "A traitor from within" is only ever someone you actually recruited — the wheel is drawn
+  // straight from state.crew, never the generic rival/canon rosters (see the conditional push
+  // in hubRevolutionary, gated on state.crew.length > 0). Removing them from crew immediately
+  // on selection (not just after the fight resolves) matters mechanically too: myCrewEdgeBonus
+  // sums everyone in state.crew into the player's own combat edge, and a traitor shouldn't be
+  // boosting your side of the fight you're about to have with them.
+  traitorEncounter: {
+    type: 'wheel',
+    id: 'traitorEncounter',
+    category: 'Revolutionary',
+    question: 'Who turns on you?',
+    icon: '🗡️',
+    options: (state) => state.crew.map((c) => opt(c.name, 1, '#450a0a')),
+    onSelect: (state, label) => ({
+      ...state,
+      lastOpponent: label,
+      crew: state.crew.filter((c) => c.name !== label),
+    }),
+    next: 'marineTactic',
+  },
+
+  // Landed on by every *LossConsequence node's "You lose an ally" option — spins for *which*
+  // crewmate, rather than picking one invisibly. They're removed from state.crew and marked
+  // deceased either way, same as the old inline resolution did.
+  loseAllyTarget: {
+    type: 'wheel',
+    id: 'loseAllyTarget',
+    question: 'Who do you lose?',
+    icon: '💔',
+    options: (state) => state.crew.map((c) => opt(c.name, 1, '#450a0a')),
+    onSelect: (state, label) => ({
+      ...state,
+      crew: state.crew.filter((c) => c.name !== label),
+      deceased: new Set(state.deceased).add(label),
+    }),
+    next: 'growthCheck',
   },
 
   weaponReforge: {
