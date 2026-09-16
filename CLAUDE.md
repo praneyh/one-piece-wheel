@@ -284,7 +284,17 @@ common one (large weight): `85 - rarityWeight×8`, floored at 15%, ceiling 95%.
 (`PARAMECIA_FRUITS`, `LOGIA_FRUITS`, etc.) — canon fruits like Gomu Gomu, Mera Mera, Ope Ope,
 Gura Gura, Hito Hito no Mi (Nika/Onyudo), Uo Uo no Mi (Seiryu), Tori Tori no Mi (Phoenix). Rarest
 canon fruits (Gomu Gomu, Nikyu Nikyu, Ope Ope, Gura Gura, all Mythical Zoans) are weighted 1
-inside their pool.
+inside their pool. Every `PARAMECIA_FRUITS`/`LOGIA_FRUITS` entry carries an English translation
+in parens (`'Gomu Gomu no Mi (Gum-Gum Fruit)'`, `'Mera Mera no Mi (Flame-Flame Fruit)'`, etc.) —
+the Zoan-family lists already showed their animal form the same way, so this just extends the
+same "explanatory text in parens" convention to the two lists that had nothing there before.
+
+`devilFruitFoundSpecific` (the "which one?" step of finding a fruit mid-run) excludes whatever's
+in `state.devilFruit`/`state.secondDevilFruit` from the roll — only one of each fruit exists in
+the world at a time, so you can't find the exact one you (or your surviving second bite) already
+carry. Falls back to the unfiltered list if filtering would empty the pool out (never happens in
+practice given how many fruits are in each type, but matches the same defensive-fallback
+convention used elsewhere, e.g. `isAvailable`'s empty-pool cases).
 
 Mastery ladder: `Untrained → Basic Understanding → Practical Use → Skilled Control → Mastered →
 Awakened` (6 rungs). Disposal options if you find a fruit you don't want: Eat it (6, or reduced
@@ -578,7 +588,14 @@ is unrelated to any of this and unchanged.
 - `growthCheckIdFor(state)` — routes to `'growthCheck'` if `lastOpponent` is set (a real fight
   just happened) vs `'growthCheckGeneric'` otherwise, so the follow-up question is never worded
   like a fight that didn't happen. `rankIncreaseCheck`/`rankIncreaseTarget` are shared by both
-  paths the same way.
+  paths the same way. **`lastOpponent` is never auto-cleared** — it only ever changes when some
+  node's `onSelect` explicitly sets or clears it, so it happily stays set to whoever you last
+  really fought across any number of unrelated hub spins in between. Any non-combat node whose
+  `next` can reach `growthCheckIdFor`/`rankIncreaseCheckIdFor` **must** explicitly set
+  `lastOpponent: undefined` in its own `onSelect` (see `ruinsTreasureCheck`, `reputationSpread`,
+  `worldEventIslandDiscovery`, `worldEventIslandDanger` for the pattern) — skipping this is what
+  let a treasure find ask "do you get stronger from this **fight**?", stale-referencing whatever
+  real fight happened earlier in the run.
 - `growthLoopNext(state)` / `growthCheckNext(state, label)` — shared routing for the growth-pick
   batch loop (continue picking while `pendingStatRolls > 0`, otherwise return to
   `pendingReturnNode ?? hubIdFor`).
@@ -666,6 +683,11 @@ is unrelated to any of this and unchanged.
 
 ## Working conventions for this codebase
 
+- A new non-combat node whose `next` can reach `growthCheckIdFor`/`rankIncreaseCheckIdFor` must
+  explicitly clear `lastOpponent: undefined` in its own `onSelect` — it's never cleared
+  automatically, so a stale value from an earlier real fight elsewhere in the run will otherwise
+  leak into unrelated later wording ("do you grow from this **fight**?" after something that
+  wasn't one). See the `growthCheckIdFor` note above for the established pattern.
 - Every wheel option pool goes through `opt(label, weight, color, flavorText?)` — don't hand-roll
   `WheelOption` object literals.
 - A stat/rank/mastery/Haki wheel that should respect a race or bloodline bonus must use the

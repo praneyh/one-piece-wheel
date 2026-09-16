@@ -983,7 +983,12 @@ export const STORY_GRAPH: StoryGraph = {
     },
     onSelect: (state, label) => ({
       ...(label === 'A Road Poneglyph lead' ? withPoneglyph(state) : state),
+      // Nothing here was a fight — clear any lastOpponent left over from earlier in the run, so
+      // the growth check downstream reads as "did you grow from this experience?" rather than
+      // stale-referencing whoever you last actually fought.
+      lastOpponent: undefined,
       pendingReturnNode: hubIdFor(state),
+      pendingEventRarityWeight: 3,
     }),
     next: (state, label) => {
       if (label === 'A Devil Fruit' && !state.devilFruit) return 'devilFruitFoundType'
@@ -1000,6 +1005,7 @@ export const STORY_GRAPH: StoryGraph = {
     options: (state) => survivalOdds(state, "the island's guardians", 1),
     onSelect: (state, label) => ({
       ...state,
+      lastOpponent: undefined,
       pendingReturnNode: hubIdFor(state),
       ...(label === 'No' ? { causeOfDeath: "Whatever claimed that island made sure you'd never leave it." } : {}),
     }),
@@ -1111,9 +1117,13 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'Does your ship survive?',
     icon: '🌊',
     options: (state) => survivalOdds(state, 'The raging storm itself', 1),
+    // No growth/rank check follows this (riding it out passively earns nothing beyond survival),
+    // so lastOpponent is never read downstream — clear it anyway rather than leave it set to a
+    // value nothing consumes, which would otherwise linger stale for whatever non-combat check
+    // comes next in the run.
     onSelect: (state, label) => ({
       ...state,
-      lastOpponent: 'The raging storm itself',
+      lastOpponent: undefined,
       ...(label === 'No' ? { causeOfDeath: 'The storm swallowed your ship whole. Your story ends here.' } : {}),
     }),
     next: hubIdFor,
@@ -1926,7 +1936,13 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Devil Fruit',
     question: 'Which one?',
     icon: '🍈',
-    options: (state) => fruitListForType(state.pendingDevilFruitType ?? 'Paramecia'),
+    options: (state) => {
+      // Only one of each fruit exists in the world at a time — you can't find the exact one
+      // you (or your second bite) already carry.
+      const owned = new Set([state.devilFruit, state.secondDevilFruit].filter((f): f is string => Boolean(f)))
+      const pool = fruitListForType(state.pendingDevilFruitType ?? 'Paramecia').filter((o) => !owned.has(o.label))
+      return pool.length > 0 ? pool : fruitListForType(state.pendingDevilFruitType ?? 'Paramecia')
+    },
     onSelect: (state, label) => ({ ...state, pendingFoundFruit: label }),
     next: 'devilFruitDisposal',
   },
