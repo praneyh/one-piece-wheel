@@ -81,7 +81,13 @@ function LegendCard({ record }: { record: ImmortalizedRecord }) {
         </span>
       </div>
       <div className="mb-2 text-xs text-neutral-500">
-        {[record.race, record.bloodline, record.rank].filter(Boolean).join(' · ')}
+        {[
+          record.race,
+          record.bloodline,
+          record.affiliation === 'Pirate' ? record.bountyAmount?.toLocaleString('en-US') : record.rank,
+        ]
+          .filter(Boolean)
+          .join(' · ')}
       </div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
         {STAT_KEYS.map((key) => (
@@ -96,9 +102,21 @@ function LegendCard({ record }: { record: ImmortalizedRecord }) {
         <span>{record.profile.fightingMastery}</span>
         {record.profile.devilFruitMastery && <span>DF: {record.profile.devilFruitMastery}</span>}
         {record.hasCrew && <span>👥 Has backup</span>}
+        <span title="How often they killed a defeated foe during their own run">
+          {moralityLabel(record.morality)}
+        </span>
       </div>
     </div>
   )
+}
+
+/** Mirrors the same 0/1/2/3 buckets lethalityFromMorality (store.ts) derives from this number —
+ * a quick read on whether this legend will actually finish you off if you lose to them. */
+function moralityLabel(morality: number): string {
+  if (morality >= 75) return '💀 Merciless'
+  if (morality >= 50) return '⚔️ Ruthless'
+  if (morality >= 20) return '🔗 Pragmatic'
+  return '🕊️ Merciful'
 }
 
 function hakiSummary(record: ImmortalizedRecord): string {

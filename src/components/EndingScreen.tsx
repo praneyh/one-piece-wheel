@@ -90,7 +90,11 @@ export default function EndingScreen({ character, onRestart }: Props) {
         <Row label="Affiliation" value={character.affiliation} />
         <Row label="Race" value={character.race} />
         {character.bloodline && <Row label="Bloodline" value={character.bloodline} />}
-        <Row label="Final Rank" value={character.rank} />
+        {character.affiliation === 'Pirate' ? (
+          <Row label="Final Bounty" value={character.bountyAmount?.toLocaleString('en-US')} />
+        ) : (
+          <Row label="Final Rank" value={character.rank} />
+        )}
         {STAT_KEYS.map((key) => (
           <Row key={key} label={STAT_LABELS[key]} value={String(character.stats[key])} />
         ))}

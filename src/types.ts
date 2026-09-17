@@ -161,6 +161,13 @@ export type CharacterState = {
    * alongside the deceased, since you can't fight someone who already sails with you. */
   recruited: Set<string>
   defeatedOpponents: string[]
+  /** How many times this character has landed on each aftermath outcome after winning a fight
+   * (marineAftermath/pirateFightAftermath) — starts at 0/0/0 so the first-ever aftermath spin is
+   * a genuine coinflip-of-three, and each landing raises that same option's odds for next time
+   * (see aftermathWeight in gameData.ts). Feeds `morality` on the ImmortalizedRecord if this
+   * character is later immortalized (see store.ts), which in turn drives how lethal *they* are
+   * (survivalOdds) if a future character loses to them. */
+  aftermathCounts: { retreat: number; capture: number; kill: number }
   lastOpponent?: string
   lastMet?: string
   lastWorldEvent?: string
@@ -169,6 +176,16 @@ export type CharacterState = {
    * fits that specific reaction, rather than one roster for every risky reaction. */
   lastWorldEventReaction?: string
   pendingTacticBonus?: number
+  /** Pirate-only: the specific round Berry figure rolled by bountyRoll for the current `rank`
+   * bracket (e.g. rank `'10M-100M'` → bountyAmount `47000000`) — this is what's actually shown
+   * as "your bounty" everywhere; `rank` itself stays the bracket string so every existing
+   * ladder-position/tier-index lookup keeps working unchanged. */
+  bountyAmount?: number
+  /** Where bountyRoll should route to once it resolves — set right before jumping there from
+   * initialRank/rankIncreaseTarget/rankJump, since those three have different "what comes next"
+   * destinations and bountyRoll is shared by all of them. Distinct from pendingReturnNode, which
+   * the growth-check chain still needs untouched for its own final-hub-return purpose. */
+  pendingBountyReturnNode?: string
   devilFruit?: string
   devilFruitType?: DevilFruitType
   devilFruitMastery?: string
@@ -224,6 +241,7 @@ export function createInitialState(): CharacterState {
     deceased: new Set(),
     recruited: new Set(),
     defeatedOpponents: [],
+    aftermathCounts: { retreat: 0, capture: 0, kill: 0 },
     additionalStyles: [],
     pendingStatRolls: 0,
     pendingGrowthPicked: [],
@@ -268,6 +286,21 @@ export type NameInputNode = {
   next: string | ((state: CharacterState) => string)
 }
 
-export type StoryNode = WheelNode | NameInputNode | EndingNode
+/** A "press the button to roll a number" screen — currently only bountyRoll. Not a wheel (no
+ * discrete wedge options make sense when there can be thousands of valid round numbers in a
+ * range); advances via a dedicated store action (submitNumberRoll), not applySelection. */
+export type NumberRollNode = {
+  type: 'numberRoll'
+  id: string
+  category?: string
+  question: string
+  icon?: string
+  /** The [min, max] numeric range to roll within, given current state. */
+  range: (state: CharacterState) => [number, number]
+  onSelect?: (state: CharacterState, rolledValue: number) => CharacterState
+  next: string | ((state: CharacterState, rolledValue: number) => string)
+}
+
+export type StoryNode = WheelNode | NameInputNode | NumberRollNode | EndingNode
 
 export type StoryGraph = Record<string, StoryNode>

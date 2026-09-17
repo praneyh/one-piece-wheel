@@ -62,6 +62,11 @@ Otherwise resolves `next` (string or function of state+label).
   immortalized (`immortalizeNamePrompt`; see "Immortalized characters" below). No `options`/
   `onSelect` — advances via a dedicated store action (`submitImmortalName`), not
   `applySelection`, since there's no wheel option being picked.
+- **`numberRoll`** — a "press the button to roll a number" screen, currently only `bountyRoll`.
+  No discrete `WheelOption`s (a bounty range can have thousands of valid round values — a pie
+  wheel with that many wedges doesn't work), so instead of `options` it has `range: (state) =>
+  [number, number]`. Advances via `submitNumberRoll`, mirroring `submitImmortalName`'s
+  bypass-`applySelection` shape exactly. See "Bounty rolls" below.
 
 There used to be a third node type, `recap` — a full-screen "achievement" interstitial (crew
 size milestones, all-Haki-maxed, Poneglyph count) that auto-advanced after 3.2s or on tap. It
@@ -98,19 +103,33 @@ a function — always go through this helper rather than accessing `node.options
   `immortalizeNamePrompt` — comfortably inside `WeightedWheel`'s ~37-char font floor, since this
   name will later render as a wedge label). Calls `onSubmit(name)`, wired in `App.tsx` to the
   store's `submitImmortalName`, not `applySelection`.
+- **`NumberRollScreen.tsx`** — the one number-roll screen (`node.type === 'numberRoll'`).
+  Tap-to-roll button; each ~70ms tick while rolling re-picks a random candidate from
+  `roundBountyCandidates(...range)` (gameData.ts) for the cycling-digits animation, then settles
+  on a final pick, waits 1300ms (matching `QuestionScreen`'s post-landing pause), and calls
+  `onResolved(value)` → the store's `submitNumberRoll`. The random pick genuinely happens at
+  button-press time client-side, same as `WeightedWheel`'s `spin()` — nothing is predetermined
+  on render.
 - **`EndingScreen.tsx`** — three "win" states keyed by `character.affiliation` (Pirate → "King of
   the Pirates", Marine → "Fleet Admiral", Revolutionary → "Commander-in-Chief"), plus a death
   screen (`causeOfDeath` set) and an "Immortalized" screen (`immortalized` set) — checked in that
   priority order (death > immortalized > win). The immortalized branch personalizes its flavor
-  text with `character.immortalName` when set. Shows a full stat recap + restart button.
+  text with `character.immortalName` when set. Shows a full stat recap + restart button — for a
+  Pirate, the "Final Rank" row shows `character.bountyAmount.toLocaleString()` (the rolled
+  figure) instead of `character.rank` (the bracket string); Marine/Revolutionary still show
+  `rank` since they have rank titles, not bounty numbers.
 - **`StatsPanel.tsx`** — slide-out drawer (📊 button, top-right, present on every non-ending
   screen), viewable at any time mid-run. Stat bars use `statTierIndex(key, value) / (ladder
-  length - 1)` for the fill percentage.
+  length - 1)` for the fill percentage. Same Pirate-only `bountyAmount`-vs-`rank` display swap as
+  `EndingScreen`'s "Final Rank" row.
 - **`ImmortalsPanel.tsx`** — same slide-out-drawer shell as `StatsPanel` (🗿 button, sits next to
   it), but shows every persisted `ImmortalizedRecord` (`loadImmortals()`, called fresh in the
   render body — no caching, cheap enough, and re-renders naturally whenever `App.tsx` does)
-  rather than the live character. Each card shows name, race/bloodline/rank, the four core
-  stats, Haki, mastery, and an accent bar in the record's own `color`.
+  rather than the live character. Each card shows name, race/bloodline/rank-or-bounty (same
+  Pirate-only swap as `StatsPanel`), the four core stats, Haki, mastery, a `moralityLabel()`
+  badge (🕊️ Merciful / 🔗 Pragmatic / ⚔️ Ruthless / 💀 Merciless — mirrors the same 0/20/50/75
+  buckets `lethalityFromMorality` uses in `store.ts`), and an accent bar in the record's own
+  `color`.
 
 ## `src/types.ts` — the data model
 
@@ -158,7 +177,7 @@ and *why* they exist (most are self-explanatory from the name):
     how race/bloodline stat mods are applied as guaranteed floors on the wheel itself (see below)
     rather than as an after-the-fact adjustment.
 
-## `src/data/gameData.ts` — rules, odds, and rosters (~2280 lines)
+## `src/data/gameData.ts` — rules, odds, and rosters (~2430 lines)
 
 `opt(label, weight, color, flavorText?)` is the universal `WheelOption` builder used everywhere.
 
@@ -289,6 +308,16 @@ in parens (`'Gomu Gomu no Mi (Gum-Gum Fruit)'`, `'Mera Mera no Mi (Flame-Flame F
 the Zoan-family lists already showed their animal form the same way, so this just extends the
 same "explanatory text in parens" convention to the two lists that had nothing there before.
 
+`RUINS_DEVIL_FRUIT_TYPES` is a second type-weight table (Paramecia 15, Zoan 15, Logia 10, Ancient
+Zoan 25, Mythical Zoan 35) used **only** by `ruinsDevilFruitType`, the node `ruinsExploration`'s
+`'A hidden Devil Fruit'` outcome routes to instead of the shared `devilFruitFoundType` — ancient
+ruins canonically skew toward fruits tied to extinct creatures/lost civilizations, so a ruins
+find is far likelier to be Ancient or (mainly) Mythical Zoan than the normal mostly-Paramecia
+odds, without being guaranteed. Every other Devil-Fruit-granting path (the generic "Find a Devil
+Fruit" hub option, World Event rewards, the Reverie heist) still uses the plain
+`DEVIL_FRUIT_TYPES` — don't swap those to the ruins table too, the bias is specifically meant to
+be a ruins thing.
+
 `devilFruitFoundSpecific` (the "which one?" step of finding a fruit mid-run) excludes whatever's
 in `state.devilFruit`/`state.secondDevilFruit` from the roll — only one of each fruit exists in
 the world at a time, so you can't find the exact one you (or your surviving second bite) already
@@ -350,6 +379,35 @@ true — "Does your reputation grow?" is a meaningless question with nowhere hig
 the wheel no longer spins it at all rather than just gating what happens *after* a "Yes." Every
 call site that used to hardcode `next: 'rankIncreaseCheck'` was migrated to this helper — if you
 add a new fight-shaped consequence chain, route through it too rather than the literal string.
+
+### Bounty rolls (`bountyRoll`, `numberRoll` node type)
+Every time a Pirate's `rank` is set (`initialRank`, `rankIncreaseTarget`, `rankJump` — never for
+Marine/Revolutionary, who have rank *titles* not bounty *numbers*), the flow detours through
+`bountyRoll` before continuing on: a `numberRoll` node, not a `wheel`, since a bounty range can
+have thousands of valid round values and a pie-wheel with that many wedges doesn't render
+sensibly. `state.rank` itself never changes format — it stays exactly the bracket string
+(`'10M-100M'` etc.) every existing tier-index/ladder-position lookup already depends on.
+`state.bountyAmount` is the new field that holds the specific rolled figure, and it's what every
+UI surface actually displays for a Pirate now (`EndingScreen`, `StatsPanel`, `ImmortalsPanel` all
+swap to it, falling back to `rank` only for Marine/Revolutionary).
+
+- `bountyRangeFor(rankLabel)` (gameData.ts) — a hand-written `BOUNTY_RANGES` lookup mapping each
+  `BOUNTY_TIERS` label to its numeric `[min, max]`, kept deliberately separate from the display
+  string (parsing "10M-100M" back into numbers would be more fragile than just writing both).
+- `roundBountyCandidates(min, max)` — every "round" bounty figure in range, matching the
+  in-universe convention (Luffy's 30,000,000 → 100,000,000 → 300,000,000 → 1,500,000,000): 7
+  digits or fewer rounds to one significant figure (only the first digit nonzero); 8+ digits only
+  requires the last 6 to be zero, so however many leading digits remain can be anything. Walks
+  each digit-length band in `[min, max]` separately since the rounding granularity changes at the
+  7/8-digit boundary. Enumeration (not sampling-then-rounding) sidesteps boundary-crossing edge
+  cases entirely — at most a few thousand candidates even for the `'2B-5B'` bracket, trivial to
+  build client-side.
+- Three call sites all follow the same shape: set `rank` in `onSelect`, and for a Pirate also
+  stash **where bountyRoll should return to** in `pendingBountyReturnNode` (`bountyRoll`'s own
+  `next` just reads it back) — a field kept deliberately separate from `pendingReturnNode`, which
+  the growth-check chain still needs untouched for its own unrelated final-hub-return purpose.
+  `initialRank` stashes `'crewOriginCheck'`; `rankIncreaseTarget` stashes whatever
+  `growthCheckIdFor(state)` would have returned directly; `rankJump` stashes `hubIdFor(state)`.
 
 ### NPC rosters (`ALL_NPCS` = Marine tiers 1-5 + Pirate roster + World Event threats + Rival
 roster + Revolutionary roster), ~70 hand-assessed canon characters
@@ -463,11 +521,39 @@ conversion), `minTier` (`tierIndex(state)`, 0-7, feeds `npcOptions`' continuous 
 Pirate/Rival/Revolutionary pools), `marineTier` (`marineTierForRank(state)`, 1-5 — Marine
 encounters use a *hard bucket* rather than continuous decay, so this needs its own frozen value,
 separate from `minTier`), `notoriety` (`clamp(0,10, round(5 + (minTier/7)*5))` — floor of 5 since
-reaching Immortalize is inherently legendary, up to 10 at max rank), `lethality`
-(`clamp(0,3, round(overallStrengthFromProfile(profile)/100*3))`), `hasCrew`
+reaching Immortalize is inherently legendary, up to 10 at max rank), `bountyAmount` (Pirates
+only — the rolled figure, see "Bounty rolls" above), `morality` and the `lethality` derived from
+it (see "Post-fight aftermath & morality" below — **not** a strength-based computation), `hasCrew`
 (`crew.length > 0 || Boolean(crewOrigin)`), and a `color` cycled from a small fixed palette
 (`immortalColorForIndex`) since immortalized characters don't have a hand-authored one like canon
 NPCs do.
+
+### Post-fight aftermath & morality
+`marineAftermath`/`pirateFightAftermath` ("What happens to them?" — retreat/capture/kill) used to
+be fixed 5/3/2 weights. Now `aftermathOptions(state, retreatLabel, captureLabel)` (gameData.ts)
+builds them dynamically: `state.aftermathCounts: { retreat, capture, kill }` starts at `0/0/0` on
+a fresh character (so the very first-ever aftermath spin of a run is a genuine even three-way
+split), and each category's weight is `AFTERMATH_BASE_WEIGHT (3) + count × 
+AFTERMATH_REINFORCEMENT_PER_LANDING (2)` — landing on an option raises that same option's own
+odds for next time, so a character's "personality" (do they tend to kill, capture, or let people
+go) solidifies through their own choices rather than being fixed from the start.
+`applyAftermath` increments the right counter via `aftermathCategory(label)` (matches
+`'You kill them'` exactly, `label.startsWith('You capture')` for either flavor's capture wording,
+else retreat).
+
+If that character is later immortalized, `moralityFromCounts(state.aftermathCounts)` (store.ts)
+turns the tally into `morality: 0-100` = `kill / (retreat+capture+kill) × 100` (50 if they never
+had an aftermath choice at all). This is what a *future* character is actually up against:
+`lethalityFromMorality(morality)` buckets it into the `0-3` `lethality` stored on the
+`ImmortalizedRecord` (≥75→3, ≥50→2, ≥20→1, else 0) — the exact same `lethality` field
+`npcLethality`/`survivalOdds` already read for every canon NPC, so a kill-happy immortalized
+character is now genuinely more likely to finish off whoever loses to them, and a
+mostly-spared-people one genuinely less so. Deliberately **not** derived from combat strength —
+`lethality` has always meant "would they finish you off," a personality trait independent of how
+strong they are (canon NPCs already work this way: Garp is `lethality: 0` despite being
+extremely powerful); raw strength already factors into `survivalOdds` separately via
+`combatEdge`. `ImmortalsPanel`'s `moralityLabel()` shows the same buckets as a flavor badge
+(🕊️ Merciful / 🔗 Pragmatic / ⚔️ Ruthless / 💀 Merciless).
 
 **Wiring into existing pools** (`gameData.ts`): `pirateRosterWithImmortals()` and
 `rivalRosterWithImmortals()` return a merged `NpcDef[]` (`[...PIRATE_ROSTER/RIVAL_ROSTER,
@@ -571,16 +657,33 @@ one reused for everything:
      outcome wheel (steal a secret / recruit a defector / grab a Devil Fruit / get caught), with
      "get caught" alone escalating to a small `worldEventReverieCaught` fight-or-flee roll against
      a specifically-named `'A CP0 black-ops agent'`.
-   - `'Help stranded sailors'` and `'Ride out the storm'` both roll `fightOddsOptions`/`survivalOdds`
-     directly against `'The raging storm itself'` (an existing `WORLD_EVENT_THREATS` entry,
-     previously unreachable in a way that made sense) — no tactic-choice step, since "Frontal
-     assault" against weather doesn't mean anything; a successful rescue directly grants a rescued
-     crewmate rather than rolling the generic reward menu.
+   - `'Help stranded sailors'` and `'Ride out the storm'` both roll directly against
+     `'The raging storm itself'` (an existing `WORLD_EVENT_THREATS` entry, previously
+     unreachable in a way that made sense) — no tactic-choice step, since "Frontal assault"
+     against weather doesn't mean anything; a successful rescue directly grants a rescued
+     crewmate rather than rolling the generic reward menu. `'Help stranded sailors'` specifically
+     uses `stormRescueOdds`/`stormRescueEdge` (gameData.ts), **not** `fightOddsOptions` — reaching
+     someone in time is a race, not a fight, so it's Speed-led rather than the Power-vs-Durability
+     `combatEdge` every other encounter uses. See "Storm rescue odds" below. `'Ride out the
+     storm'` stays on plain `survivalOdds` (also Speed-independent — you're just weathering it,
+     not racing anywhere).
 
 `applyWorldEventBoost` (multiplies the hub's `'World Event'` option weight for Monkey D. Family)
 is unrelated to any of this and unchanged.
 
-## `src/data/storyGraph.ts` — the ~104-node story graph (~2000 lines)
+### Storm rescue odds (`stormRescueEdge`, `stormRescueOdds`)
+Deliberately a separate formula from `combatEdge`, not a variant of it — reaching stranded
+sailors in time is a speed race, not a fight, so Power/Durability (the physical edge that
+dominates every other encounter's odds) are left out entirely. Compares the player against the
+storm's own `WORLD_EVENT_THREATS` profile the same way `combatEdge` compares against an
+opponent, using the same `expTier` exponential tier-gap curve and the same `logisticWeight`/
+`FIGHT_EDGE_SCALE` final mapping (so the odds "feel" consistent with every other Yes/No roll),
+but built from: Speed (dominant weight `1.0`), Endurance (`0.3` — outlasting the conditions long
+enough to search), and Observation Haki rank (`1.2` per level — sensing where people are through
+the chaos). If you touch this, keep Speed the clearly dominant term; don't quietly reintroduce
+Power/Durability or let a secondary term outweigh it.
+
+## `src/data/storyGraph.ts` — the ~108-node story graph (~2100 lines)
 
 `START_NODE_ID = 'affiliation'`. Helper functions worth knowing before editing nodes:
 - `hubIdFor(state)` → `` `hub${state.affiliation}` `` — the return address for most side-quest
@@ -634,9 +737,12 @@ is unrelated to any of this and unchanged.
    1 — deliberately a small-but-not-negligible slice, further multiplied by a bloodline's
    `worldEventWeightMultiplier` via `applyWorldEventBoost` if present, e.g. Monkey D. Family's
    ×3 stacks to an effective 9). Each spin increments `hubSpinCount`, conditionally appends
-   "reforge your weapon" (if armed), the rank/promotion option (`rankPressureWeight`-driven, only
-   if not already at max rank), and the `Immortalize` option (only past `hubSpinCount ≥ 10`,
-   growing weight after).
+   "reforge your weapon" (`canReforgeWeapon(state)` — needs a weapon *and* at least one of
+   Power/Durability not already maxed; `weaponReforge`'s own `options` then independently drops
+   whichever of Power/Durability *is* maxed, so a reforge only ever offers something it can
+   actually still improve), the rank/promotion option (`rankPressureWeight`-driven, only if not
+   already at max rank), and the `Immortalize` option (only past `hubSpinCount ≥ 10`, growing
+   weight after).
 3. **Combat branches** all follow the same shape: pick a target from a reweighted roster →
    pick a tactic → resolve fight odds (`fightOddsOptions`) → on loss, roll `survivalOdds`; a
    `No` there sets `causeOfDeath` and the store's `applySelection` immediately overrides

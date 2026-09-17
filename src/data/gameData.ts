@@ -560,6 +560,53 @@ function logisticWeight(edge: number, scale: number): number {
   return Math.round(Math.max(1, Math.min(99, probability)))
 }
 
+const STORM_RESCUE_SPEED_WEIGHT = 1
+const STORM_RESCUE_ENDURANCE_WEIGHT = 0.3
+const STORM_RESCUE_OBSERVATION_WEIGHT = 1.2
+
+/**
+ * How likely you are to reach stranded sailors before the storm does — primarily a question of
+ * speed (closing the distance through the wreckage in time), not combat strength. Observation
+ * Haki (sensing where people are through the chaos) and Endurance (outlasting the conditions
+ * long enough to search) matter too, but far less; Power/Durability — the physical edge that
+ * dominates `combatEdge` — are left out entirely, since reaching someone isn't a fight.
+ * Compared against the storm's own profile the same way `combatEdge` compares against an
+ * opponent, using the same exponential tier-gap curve, so a large speed advantage swings this
+ * as decisively as it would a real fight.
+ */
+export function stormRescueEdge(state: CharacterState, opponentName: string): number {
+  const opp = findNpc(opponentName)?.profile
+
+  const mySpeedIdx = statTierIndex('speed', state.stats.speed)
+  const myEnduranceIdx = statTierIndex('endurance', state.stats.endurance)
+  const myObservationIdx = HAKI_LEVEL_ORDER.indexOf(state.haki.Observation)
+
+  const oppSpeedIdx = opp ? statTierIndex('speed', opp.stats.speed) : FALLBACK_COMBAT_PROFILE.speed
+  const oppEnduranceIdx = opp ? statTierIndex('endurance', opp.stats.endurance) : FALLBACK_COMBAT_PROFILE.endurance
+  const oppObservationIdx = opp ? HAKI_LEVEL_ORDER.indexOf(opp.haki.Observation) : 0
+
+  const speedEdge = (expTier(mySpeedIdx) - expTier(oppSpeedIdx)) * STORM_RESCUE_SPEED_WEIGHT
+  const enduranceEdge = (expTier(myEnduranceIdx) - expTier(oppEnduranceIdx)) * STORM_RESCUE_ENDURANCE_WEIGHT
+  const observationEdge = (myObservationIdx - oppObservationIdx) * STORM_RESCUE_OBSERVATION_WEIGHT
+
+  return speedEdge + enduranceEdge + observationEdge
+}
+
+/** Yes/No odds for a storm rescue — see stormRescueEdge for what drives it. Shares the same
+ * logistic curve/scale as fightOddsOptions so the odds "feel" consistent with every other
+ * Yes/No roll in the game, despite being computed from a different, speed-led formula. */
+export function stormRescueOdds(
+  state: CharacterState,
+  opponentName: string,
+  flavorYes: string,
+  flavorNo: string,
+): WheelOption[] {
+  const edge = stormRescueEdge(state, opponentName)
+  const winWeight = logisticWeight(edge, FIGHT_EDGE_SCALE)
+  const loseWeight = 100 - winWeight
+  return [opt('Yes', winWeight, '#16a34a', flavorYes), opt('No', loseWeight, '#dc2626', flavorNo)]
+}
+
 const STAT_TIER_COLOR_PALETTES: Record<StatKey, string[]> = {
   power: POWER_TIER_COLORS,
   speed: SPEED_TIER_COLORS,
@@ -629,6 +676,26 @@ export function growableCount(state: CharacterState): number {
     : dfMaxIdx
   const dfMasteryCount = state.devilFruit && (dfIdx1 < dfMaxIdx || dfIdx2 < dfMaxIdx) ? 1 : 0
   return statCount + hakiCount + masteryCount + dfMasteryCount
+}
+
+/** Which stats a weapon reforge can still improve — Power and/or Durability drop off
+ * individually once maxed, same "already at the ladder's top" check every other growth wheel
+ * uses. Empty once both are maxed, since there'd be nothing left for a reforge to improve. */
+export function weaponReforgeOptions(state: CharacterState): WheelOption[] {
+  const options: WheelOption[] = []
+  if (statTierIndex('power', state.stats.power) < STAT_TIER_LADDERS.power.length - 1) {
+    options.push(opt('Power', 5, '#dc2626'))
+  }
+  if (statTierIndex('durability', state.stats.durability) < STAT_TIER_LADDERS.durability.length - 1) {
+    options.push(opt('Durability', 5, '#f59e0b'))
+  }
+  return options
+}
+
+/** Whether "a blacksmith offers to reforge your weapon" should even appear on the hub wheel —
+ * needs a weapon *and* at least one of Power/Durability not already maxed. */
+export function canReforgeWeapon(state: CharacterState): boolean {
+  return Boolean(state.weapon) && weaponReforgeOptions(state).length > 0
 }
 
 /** Weighted Yes/No odds for post-fight growth: the harder the fight relative to your own
@@ -776,6 +843,18 @@ export const DEVIL_FRUIT_TYPES: WheelOption[] = [
   opt('Logia', 15, '#f59e0b'),
   opt('Ancient Zoan', 7, '#b45309'),
   opt('Mythical Zoan', 3, '#dc2626'),
+]
+
+/** Same 5 types, but for a fruit found specifically in ancient ruins — Ancient/Mythical Zoan
+ * fruits are canonically the ones tied to long-dead civilizations and legendary/extinct
+ * creatures, so a ruins find skews heavily toward them (mainly Mythical) instead of the normal
+ * mostly-Paramecia odds. Still not guaranteed — ruins can turn up an ordinary fruit too. */
+export const RUINS_DEVIL_FRUIT_TYPES: WheelOption[] = [
+  opt('Paramecia', 15, '#7c3aed'),
+  opt('Zoan', 15, '#15803d'),
+  opt('Logia', 10, '#f59e0b'),
+  opt('Ancient Zoan', 25, '#b45309'),
+  opt('Mythical Zoan', 35, '#dc2626'),
 ]
 
 const PARAMECIA_PALETTE = ['#6d28d9', '#7c3aed', '#8b5cf6', '#a78bfa', '#c4b5fd']
@@ -939,6 +1018,54 @@ export const BOUNTY_TIERS = [
   '1B-2B',
   '2B-5B',
 ]
+
+/** Numeric [min, max] backing each BOUNTY_TIERS label — kept as a separate lookup rather than
+ * parsed from the display string, so the two stay decoupled if the label format ever changes. */
+const BOUNTY_RANGES: Record<string, [number, number]> = {
+  '100-99,999': [100, 99_999],
+  '100,000-999,999': [100_000, 999_999],
+  '1M-10M': [1_000_000, 10_000_000],
+  '10M-100M': [10_000_000, 100_000_000],
+  '100M-400M': [100_000_000, 400_000_000],
+  '400M-999M': [400_000_000, 999_000_000],
+  '1B-2B': [1_000_000_000, 2_000_000_000],
+  '2B-5B': [2_000_000_000, 5_000_000_000],
+}
+
+export function bountyRangeFor(rankLabel: string): [number, number] {
+  return BOUNTY_RANGES[rankLabel] ?? [100, 100]
+}
+
+/**
+ * Every "round" bounty figure within [min, max], matching the in-universe convention (Luffy's
+ * 30,000,000 → 100,000,000 → 300,000,000 → 500,000,000 → 1,500,000,000, etc.): a bounty of 7
+ * digits or fewer has only its first digit nonzero (round to one significant figure); 8+ digits
+ * only requires the last 6 to be zero, so however many leading digits remain can be anything.
+ * Each digit-length band within the range is walked separately since the "round to" granularity
+ * changes at the 7/8-digit boundary.
+ */
+export function roundBountyCandidates(min: number, max: number): number[] {
+  const candidates: number[] = []
+  const minDigits = String(min).length
+  const maxDigits = String(max).length
+  for (let digits = minDigits; digits <= maxDigits; digits++) {
+    const granularity = digits <= 7 ? Math.pow(10, digits - 1) : 1_000_000
+    const bandLo = Math.max(min, Math.pow(10, digits - 1))
+    const bandHi = Math.min(max, Math.pow(10, digits) - 1)
+    if (bandLo > bandHi) continue
+    const start = Math.ceil(bandLo / granularity) * granularity
+    for (let v = start; v <= bandHi; v += granularity) candidates.push(v)
+  }
+  return candidates
+}
+
+/** Picks one round bounty uniformly from roundBountyCandidates(min, max) — used server-side
+ * (well, store-side) as a fallback; NumberRollScreen does its own client-side pick at
+ * button-press time so the reveal is genuinely random per click, not predetermined on render. */
+export function randomRoundBounty(min: number, max: number): number {
+  const candidates = roundBountyCandidates(min, max)
+  return candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : min
+}
 
 export const MARINE_RANKS = [
   'Chore Boy',
@@ -2159,6 +2286,29 @@ export function npcLethality(name: string): number {
  * unnamed nobody, not someone whose defeat would make headlines). */
 export function npcNotoriety(name: string): number {
   return findNpc(name)?.notoriety ?? 1
+}
+
+const AFTERMATH_BASE_WEIGHT = 3
+const AFTERMATH_REINFORCEMENT_PER_LANDING = 2
+
+/** Weight for one aftermath category (retreat/capture/kill), reinforced by how many times the
+ * player has already landed on it this run. All three counts start at 0, so the very first
+ * aftermath spin of a run is a genuine even three-way split; each landing nudges that same
+ * option's odds up for next time, modeling a character's personality solidifying through their
+ * own choices rather than being fixed from the start. */
+function aftermathWeight(state: CharacterState, category: keyof CharacterState['aftermathCounts']): number {
+  return AFTERMATH_BASE_WEIGHT + state.aftermathCounts[category] * AFTERMATH_REINFORCEMENT_PER_LANDING
+}
+
+/** Builds the shared 3-option "what happens to them?" wheel — the Marine and Pirate fight
+ * chains use different flavor text for the retreat/capture wedges, but the same underlying
+ * reinforcing weights, since it's the same retreat/capture/kill categories being tracked. */
+export function aftermathOptions(state: CharacterState, retreatLabel: string, captureLabel: string): WheelOption[] {
+  return [
+    opt(retreatLabel, aftermathWeight(state, 'retreat'), '#334155'),
+    opt(captureLabel, aftermathWeight(state, 'capture'), '#1d4ed8'),
+    opt('You kill them', aftermathWeight(state, 'kill'), '#450a0a'),
+  ]
 }
 
 /**

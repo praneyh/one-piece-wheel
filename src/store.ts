@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { createInitialState, type CharacterState, type WheelOption } from './types'
 import { STORY_GRAPH, START_NODE_ID } from './data/storyGraph'
-import { MASTERY_LEVEL_ORDER, allNpcNames, marineTierForRank, overallStrengthFromProfile, tierIndex } from './data/gameData'
+import { MASTERY_LEVEL_ORDER, allNpcNames, marineTierForRank, tierIndex } from './data/gameData'
 import {
   addImmortal,
   immortalColorForIndex,
@@ -25,6 +25,9 @@ type StoryStore = {
    * being picked. Builds and persists an ImmortalizedRecord from the current character, then
    * resolves the node's own `next` like applySelection does for a wheel node. */
   submitImmortalName: (name: string) => void
+  /** Advances a `numberRoll` node (currently just bountyRoll) — same bypass-applySelection
+   * shape as submitImmortalName, but for a rolled number instead of a typed name. */
+  submitNumberRoll: (value: number) => void
   restart: () => void
 }
 
@@ -54,6 +57,25 @@ function clamp(min: number, max: number, value: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
+/** 0-100: what fraction of this character's own post-fight aftermath choices were kills.
+ * Neutral (50) if they never actually had an aftermath choice to make (no wins this run, or an
+ * immediate Immortalize). */
+function moralityFromCounts(counts: CharacterState['aftermathCounts']): number {
+  const total = counts.retreat + counts.capture + counts.kill
+  if (total === 0) return 50
+  return Math.round((counts.kill / total) * 100)
+}
+
+/** A lethality rating is a personality trait, not a power measure (raw strength already
+ * factors into survivalOdds separately via combatEdge) — so it's bucketed straight from
+ * morality rather than from overallStrengthFromProfile. */
+function lethalityFromMorality(morality: number): number {
+  if (morality >= 75) return 3
+  if (morality >= 50) return 2
+  if (morality >= 20) return 1
+  return 0
+}
+
 function buildImmortalizedRecord(state: CharacterState, name: string): ImmortalizedRecord {
   const profile = {
     stats: state.stats,
@@ -63,6 +85,7 @@ function buildImmortalizedRecord(state: CharacterState, name: string): Immortali
     secondDevilFruitMastery: state.secondDevilFruit ? state.secondDevilFruitMastery : undefined,
   }
   const minTier = tierIndex(state)
+  const morality = moralityFromCounts(state.aftermathCounts)
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name,
@@ -70,13 +93,15 @@ function buildImmortalizedRecord(state: CharacterState, name: string): Immortali
     race: state.race,
     bloodline: state.bloodline,
     rank: state.rank,
+    bountyAmount: state.affiliation === 'Pirate' ? state.bountyAmount : undefined,
     profile,
     minTier,
     marineTier: marineTierForRank(state),
     // Reaching Immortalize is inherently legendary — floor of 5, growing toward 10 the further
     // up their own rank ladder they'd climbed.
     notoriety: clamp(0, 10, Math.round(5 + (minTier / 7) * 5)),
-    lethality: clamp(0, 3, Math.round((overallStrengthFromProfile(profile) / 100) * 3)),
+    morality,
+    lethality: lethalityFromMorality(morality),
     hasCrew: state.crew.length > 0 || Boolean(state.crewOrigin),
     color: immortalColorForIndex(loadImmortals().length),
     immortalizedAt: Date.now(),
@@ -134,6 +159,15 @@ export const useStoryStore = create<StoryStore>((set, get) => ({
     }
     const nextId = typeof node.next === 'function' ? node.next(nextState) : node.next
 
+    set((s) => ({ character: nextState, currentNodeId: nextId, visitId: s.visitId + 1 }))
+  },
+
+  submitNumberRoll: (value) => {
+    const node = STORY_GRAPH[get().currentNodeId]
+    if (!node || node.type !== 'numberRoll') return
+    let nextState = get().character
+    if (node.onSelect) nextState = node.onSelect(nextState, value)
+    const nextId = typeof node.next === 'function' ? node.next(nextState, value) : node.next
     set((s) => ({ character: nextState, currentNodeId: nextId, visitId: s.visitId + 1 }))
   },
 

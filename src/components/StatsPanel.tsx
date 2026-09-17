@@ -52,7 +52,11 @@ export default function StatsPanel({ character, open, onClose }: Props) {
           <Row label="Affiliation" value={character.affiliation} />
           <Row label="Race" value={character.race} />
           {character.bloodline && <Row label="Bloodline" value={character.bloodline} />}
-          <Row label="Rank" value={character.rank} />
+          {character.affiliation === 'Pirate' ? (
+            <Row label="Bounty" value={character.bountyAmount?.toLocaleString('en-US')} />
+          ) : (
+            <Row label="Rank" value={character.rank} />
+          )}
         </Section>
 
         <Section title="Stats" icon="💪">

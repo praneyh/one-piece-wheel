@@ -14,6 +14,9 @@ export type ImmortalizedRecord = {
   race?: string
   bloodline?: string
   rank: string
+  /** Pirate-only: the specific rolled Berry figure (see bountyRoll in storyGraph.ts) —
+   * undefined for Marine/Revolutionary, who show `rank` (a title, not a bounty bracket). */
+  bountyAmount?: number
   /** Same shape CharacterState.stats/.haki/.fightingMastery/.devilFruitMastery already use —
    * picked directly off the live character at immortalization time, no conversion needed. */
   profile: StrengthProfile
@@ -24,7 +27,16 @@ export type ImmortalizedRecord = {
    * 5-bucket partition instead of continuous decay, so this is frozen separately from minTier. */
   marineTier: 1 | 2 | 3 | 4 | 5
   notoriety: number
+  /** Derived from `morality` (see below), not from combat strength — a lethality rating is
+   * meant to be a personality trait ("would they finish you off"), independent of how strong
+   * they are; raw power already factors into survivalOdds separately via combatEdge. */
   lethality: number
+  /** 0-100: what fraction of this character's own post-fight aftermath choices were kills
+   * (`aftermathCounts.kill / total`, from their playthrough — see storyGraph.ts's
+   * aftermathOptions/applyAftermath) — 50 if they never had an aftermath choice to make. This is
+   * what a future character who loses to them is actually up against: survivalOdds looks up
+   * `lethality`, which is derived from this, not the other way around. */
+  morality: number
   hasCrew: boolean
   color: string
   immortalizedAt: number

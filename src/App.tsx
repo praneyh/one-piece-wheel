@@ -4,6 +4,7 @@ import { STORY_GRAPH } from './data/storyGraph'
 import { useStoryStore } from './store'
 import QuestionScreen from './components/QuestionScreen'
 import NameInputScreen from './components/NameInputScreen'
+import NumberRollScreen from './components/NumberRollScreen'
 import EndingScreen from './components/EndingScreen'
 import StatsPanel from './components/StatsPanel'
 import ImmortalsPanel from './components/ImmortalsPanel'
@@ -14,6 +15,7 @@ export default function App() {
   const character = useStoryStore((s) => s.character)
   const applySelection = useStoryStore((s) => s.applySelection)
   const submitImmortalName = useStoryStore((s) => s.submitImmortalName)
+  const submitNumberRoll = useStoryStore((s) => s.submitNumberRoll)
   const restart = useStoryStore((s) => s.restart)
   const [statsOpen, setStatsOpen] = useState(false)
   const [immortalsOpen, setImmortalsOpen] = useState(false)
@@ -63,6 +65,15 @@ export default function App() {
             key={`${node.id}:${visitId}`}
             node={node}
             onSubmit={(name) => submitImmortalName(name)}
+          />
+        )}
+
+        {node.type === 'numberRoll' && (
+          <NumberRollScreen
+            key={`${node.id}:${visitId}`}
+            node={node}
+            range={node.range(character)}
+            onResolved={(value) => submitNumberRoll(value)}
           />
         )}
 

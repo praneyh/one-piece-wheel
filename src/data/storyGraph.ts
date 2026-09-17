@@ -24,14 +24,18 @@ import {
   MASTERY_LEVEL_ORDER,
   MASTERY_LEVELS,
   RACES,
+  RUINS_DEVIL_FRUIT_TYPES,
   STAT_OPTIONS,
   STAT_TIER_OPTIONS,
   TACTIC_OPTIONS,
   WORLD_EVENT_REACTIONS,
+  aftermathOptions,
   bloodlineCheckOdds,
   bloodlineDef,
   bloodlineOptions,
+  bountyRangeFor,
   bumpMasteryLevel,
+  canReforgeWeapon,
   crewSizeOptionsFor,
   crewStrengthOptionsFor,
   devilFruitDisposalOptions,
@@ -64,8 +68,10 @@ import {
   revolutionaryRosterOptions,
   rivalRosterWithImmortals,
   secondDevilFruitSurvivalOdds,
+  stormRescueOdds,
   survivalOdds,
   tacticBonus,
+  weaponReforgeOptions,
   worldEventDangerPool,
 } from './gameData'
 import { isAtCap, loadImmortals, removeImmortalByName } from './immortals'
@@ -202,9 +208,20 @@ function setLastCrewmateStrength(state: CharacterState, label: string): Characte
 // localStorage (not just this run's `deceased` set, which resets on restart), and this is the
 // single shared choke point every kill passes through (marineAftermath and pirateFightAftermath
 // both call it, and nothing else in the file sets 'You kill them'). Don't "purify" this away.
+function aftermathCategory(label: string): keyof CharacterState['aftermathCounts'] {
+  if (label === 'You kill them') return 'kill'
+  if (label.startsWith('You capture')) return 'capture'
+  return 'retreat'
+}
+
 function applyAftermath(state: CharacterState, label: string): CharacterState {
   const foe = state.lastOpponent ?? 'an opponent'
-  const withDefeat = { ...state, defeatedOpponents: [...state.defeatedOpponents, foe] }
+  const category = aftermathCategory(label)
+  const withDefeat = {
+    ...state,
+    defeatedOpponents: [...state.defeatedOpponents, foe],
+    aftermathCounts: { ...state.aftermathCounts, [category]: state.aftermathCounts[category] + 1 },
+  }
   if (label === 'You kill them') {
     removeImmortalByName(foe)
     return { ...withDefeat, deceased: new Set(withDefeat.deceased).add(foe) }
@@ -516,8 +533,13 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'Where do you start?',
     icon: '🏴‍☠️',
     options: fullRankOptions,
-    onSelect: (state, label) => ({ ...state, rank: label, rankHistory: [label] }),
-    next: (state) => (state.affiliation === 'Pirate' ? 'crewOriginCheck' : hubIdFor(state)),
+    onSelect: (state, label) => ({
+      ...state,
+      rank: label,
+      rankHistory: [label],
+      ...(state.affiliation === 'Pirate' ? { pendingBountyReturnNode: 'crewOriginCheck' } : {}),
+    }),
+    next: (state) => (state.affiliation === 'Pirate' ? 'bountyRoll' : hubIdFor(state)),
   },
 
   // ---- starting crew origin (Pirate only) --------------------------------
@@ -602,7 +624,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Word of your exploits spreads', 3, '#0d9488'),
       ]
       applyWorldEventBoost(state, options)
-      if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
+      if (canReforgeWeapon(state)) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get a new bounty', rankPressureWeight(state, 3), '#0d9488'))
       }
@@ -668,7 +690,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Your service is recognized', 3, '#0d9488'),
       ]
       applyWorldEventBoost(state, options)
-      if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
+      if (canReforgeWeapon(state)) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
       }
@@ -732,7 +754,7 @@ export const STORY_GRAPH: StoryGraph = {
         opt('Your cause gains sympathizers', 3, '#0d9488'),
       ]
       applyWorldEventBoost(state, options)
-      if (state.weapon) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
+      if (canReforgeWeapon(state)) options.push(opt('A blacksmith offers to reforge your weapon', 2, '#6b21a8'))
       if (!isAtMaxRank(state)) {
         options.push(opt('Get promoted', rankPressureWeight(state, 4), '#0d9488'))
       }
@@ -1094,8 +1116,10 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'World Event',
     question: 'Do you reach them in time?',
     icon: '🌊',
+    // Speed-led, not combatEdge — see stormRescueOdds: this is a race against the storm, not a
+    // fight, so Power/Durability don't factor in at all.
     options: (state) =>
-      fightOddsOptions(
+      stormRescueOdds(
         state,
         'The raging storm itself',
         'You pull the stranded sailors to safety.',
@@ -1420,11 +1444,7 @@ export const STORY_GRAPH: StoryGraph = {
     id: 'marineAftermath',
     question: 'What happens to them?',
     icon: '⚔️',
-    options: [
-      opt('They retreat and report back', 5, '#334155'),
-      opt('You capture them', 3, '#1d4ed8'),
-      opt('You kill them', 2, '#450a0a'),
-    ],
+    options: (state) => aftermathOptions(state, 'They retreat and report back', 'You capture them'),
     onSelect: (state, label) => ({ ...applyAftermath(state, label), pendingReturnNode: hubIdFor(state) }),
     next: rankIncreaseCheckIdFor,
   },
@@ -1500,11 +1520,7 @@ export const STORY_GRAPH: StoryGraph = {
     id: 'pirateFightAftermath',
     question: 'What happens to them?',
     icon: '⚔️',
-    options: [
-      opt('They scatter and flee', 5, '#334155'),
-      opt('You capture their captain', 3, '#1d4ed8'),
-      opt('You kill them', 2, '#450a0a'),
-    ],
+    options: (state) => aftermathOptions(state, 'They scatter and flee', 'You capture their captain'),
     onSelect: (state, label) => ({ ...applyAftermath(state, label), pendingReturnNode: hubIdFor(state) }),
     next: rankIncreaseCheckIdFor,
   },
@@ -1537,8 +1553,13 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'How far does it climb?',
     icon: '📈',
     options: higherRankOptions,
-    onSelect: (state, label) => ({ ...state, rank: label, rankHistory: [...state.rankHistory, label] }),
-    next: growthCheckIdFor,
+    onSelect: (state, label) => {
+      const next = { ...state, rank: label, rankHistory: [...state.rankHistory, label] }
+      // Detour through bountyRoll for Pirates — stash where growthCheckIdFor would otherwise
+      // have sent us directly, since bountyRoll is shared and needs to know where to return.
+      return next.affiliation === 'Pirate' ? { ...next, pendingBountyReturnNode: growthCheckIdFor(next) } : next
+    },
+    next: (state) => (state.affiliation === 'Pirate' ? 'bountyRoll' : growthCheckIdFor(state)),
   },
 
   growthCheck: {
@@ -1581,7 +1602,7 @@ export const STORY_GRAPH: StoryGraph = {
     next: (state, label) => {
       const routes: Record<string, string> = {
         'A guardian attacks!': 'marineTactic',
-        'A hidden Devil Fruit': 'devilFruitFoundType',
+        'A hidden Devil Fruit': 'ruinsDevilFruitType',
         'A cache of treasure — your reputation grows': 'ruinsTreasureCheck',
         'Just dust and bones': hubIdFor(state),
       }
@@ -1678,7 +1699,7 @@ export const STORY_GRAPH: StoryGraph = {
     category: 'Gear',
     question: 'A blacksmith offers to reforge your weapon. What do they improve?',
     icon: '🗡️',
-    options: [opt('Power', 5, '#dc2626'), opt('Durability', 5, '#f59e0b')],
+    options: weaponReforgeOptions,
     onSelect: (state, label) => ({
       ...state,
       pendingStatName: label.toLowerCase() as StatKey,
@@ -1930,6 +1951,20 @@ export const STORY_GRAPH: StoryGraph = {
     next: 'devilFruitFoundSpecific',
   },
 
+  // A fruit found specifically in ancient ruins skews heavily toward Ancient/Mythical Zoan (see
+  // RUINS_DEVIL_FRUIT_TYPES) — otherwise identical to devilFruitFoundType, feeding the same
+  // devilFruitFoundSpecific/devilFruitDisposal chain afterward.
+  ruinsDevilFruitType: {
+    type: 'wheel',
+    id: 'ruinsDevilFruitType',
+    category: 'Devil Fruit',
+    question: 'What type is it?',
+    icon: '🍈',
+    options: RUINS_DEVIL_FRUIT_TYPES,
+    onSelect: (state, label) => ({ ...state, pendingDevilFruitType: label as CharacterState['pendingDevilFruitType'] }),
+    next: 'devilFruitFoundSpecific',
+  },
+
   devilFruitFoundSpecific: {
     type: 'wheel',
     id: 'devilFruitFoundSpecific',
@@ -2032,8 +2067,22 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'What do you rise to?',
     icon: '📈',
     options: higherRankOptions,
-    onSelect: (state, label) => ({ ...state, rank: label, rankHistory: [...state.rankHistory, label] }),
-    next: hubIdFor,
+    onSelect: (state, label) => {
+      const next = { ...state, rank: label, rankHistory: [...state.rankHistory, label] }
+      return next.affiliation === 'Pirate' ? { ...next, pendingBountyReturnNode: hubIdFor(next) } : next
+    },
+    next: (state) => (state.affiliation === 'Pirate' ? 'bountyRoll' : hubIdFor(state)),
+  },
+
+  bountyRoll: {
+    type: 'numberRoll',
+    id: 'bountyRoll',
+    category: 'Rank',
+    question: 'What does the world put on your head?',
+    icon: '💰',
+    range: (state) => bountyRangeFor(state.rank),
+    onSelect: (state, value) => ({ ...state, bountyAmount: value, pendingBountyReturnNode: undefined }),
+    next: (state) => state.pendingBountyReturnNode ?? hubIdFor(state),
   },
 
   // ---- ending ---------------------------------------------------------------
