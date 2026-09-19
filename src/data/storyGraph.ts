@@ -2081,7 +2081,7 @@ export const STORY_GRAPH: StoryGraph = {
     question: 'What does the world put on your head?',
     icon: '💰',
     range: (state) => bountyRangeFor(state.rank),
-    onSelect: (state, value) => ({ ...state, bountyAmount: value, pendingBountyReturnNode: undefined }),
+    onSelect: (state, value) => ({ ...state, bountyAmount: value }),
     next: (state) => state.pendingBountyReturnNode ?? hubIdFor(state),
   },
 
